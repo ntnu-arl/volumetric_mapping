@@ -1133,13 +1133,13 @@ void OctomapWorld::generateMarkerArray(
     if (octree_->isNodeOccupied(*it)) {
       occupied_nodes->markers[depth_level].points.push_back(cube_center);
 
-#ifdef OCTOMAP_IS_COLORED
+//#ifdef OCTOMAP_IS_COLORED
       occupied_nodes->markers[depth_level].colors.push_back(
              getEncodedColor(it));
-#else
-      occupied_nodes->markers[depth_level].colors.push_back(
-          percentToColor(colorizeMapByHeight(it.getZ(), min_z, max_z)));
-#endif
+//#else
+      // occupied_nodes->markers[depth_level].colors.push_back(
+      //     percentToColor(colorizeMapByHeight(it.getZ(), min_z, max_z)));
+//#endif
 
     } else {
       free_nodes->markers[depth_level].points.push_back(cube_center);
@@ -1232,7 +1232,10 @@ std_msgs::ColorRGBA OctomapWorld::getEncodedColor(octomap::SaliencyOcTree::itera
 
   if (saliency.type == octomap::SaliencyOcTreeNode::Saliency::VOXEL_SALIENCY)
   {
-    getHeatMapColor(((float)saliency.value)/255, color.r, color.g, color.b);
+    // getHeatMapColor(((float)saliency.value)/255, color.r, color.g, color.b);
+    color.r = 0.7;
+    color.g = 0.14;
+    color.b = 0;
   }
   else if (saliency.type == octomap::SaliencyOcTreeNode::Saliency::VOXEL_RETIRED)
   {
