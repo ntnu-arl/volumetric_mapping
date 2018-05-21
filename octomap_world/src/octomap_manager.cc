@@ -30,8 +30,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "octomap_world/octomap_manager.h"
 
 #include <glog/logging.h>
-#include <minkindr_conversions/kindr_msg.h>
 #include <minkindr_conversions/kindr_tf.h>
+#include <minkindr_conversions/kindr_msg.h>
 #include <minkindr_conversions/kindr_xml.h>
 #include <pcl/io/pcd_io.h>
 #include <pcl/io/ply_io.h>
@@ -50,7 +50,8 @@ OctomapManager::OctomapManager(const ros::NodeHandle& nh,
       Q_initialized_(false),
       Q_(Eigen::Matrix4d::Identity()),
       full_image_size_(752, 480),
-      map_publish_frequency_(0.0) {
+      map_publish_frequency_(0.0),
+      tf_update_frequency_(5.0) {
   setParametersFromROS();
   subscribe();
   advertiseServices();
@@ -71,6 +72,15 @@ OctomapManager::OctomapManager(const ros::NodeHandle& nh,
 }
 
 void OctomapManager::setParametersFromROS() {
+
+  SaliencyParameters sal_params;
+  nh_private_.param("saliency/alpha", sal_params.alpha, sal_params.alpha);
+  nh_private_.param("saliency/beta", sal_params.beta, sal_params.beta);
+  nh_private_.param("saliency/saliency_threshold", sal_params.saliency_threshold, sal_params.saliency_threshold);
+  nh_private_.param("saliency/projection_limit", sal_params.projection_limit, sal_params.projection_limit);
+  nh_private_.param("saliency/ground_limit", sal_params.ground_limit, sal_params.ground_limit);
+  salconfig_ = sal_params;
+
   OctomapParameters params;
   nh_private_.param("tf_frame", world_frame_, world_frame_);
   nh_private_.param("robot_frame", robot_frame_, robot_frame_);
@@ -108,6 +118,9 @@ void OctomapManager::setParametersFromROS() {
                     params.treat_unknown_as_occupied);
   nh_private_.param("change_detection_enabled", params.change_detection_enabled,
                     params.change_detection_enabled);
+
+  nh_private_.param("tf_update_frequency", tf_update_frequency_, tf_update_frequency_);
+  tf_update_latency = ros::Duration(1.0/tf_update_frequency_);
 
   // Try to initialize Q matrix from parameters, if available.
   std::vector<double> Q_vec;
@@ -214,8 +227,6 @@ void OctomapManager::advertiseServices() {
       "set_box_occupancy", &OctomapManager::setBoxOccupancyCallback, this);
   set_display_bounds_service_ = nh_private_.advertiseService(
       "set_display_bounds", &OctomapManager::setDisplayBoundsCallback, this);
-  get_changed_points_service_ = nh_private_.advertiseService(
-      "get_changed_points", &OctomapManager::getChangedPointsCallback, this);
 }
 
 void OctomapManager::advertisePublishers() {
@@ -223,6 +234,8 @@ void OctomapManager::advertisePublishers() {
       "octomap_occupied", 1, latch_topics_);
   free_nodes_pub_ = nh_private_.advertise<visualization_msgs::MarkerArray>(
       "octomap_free", 1, latch_topics_);
+  projection_line_pub_ = nh_private_.advertise<visualization_msgs::Marker>(
+      "projection_line", 1, latch_topics_);
 
   binary_map_pub_ = nh_private_.advertise<octomap_msgs::Octomap>(
       "octomap_binary", 1, latch_topics_);
@@ -248,6 +261,12 @@ void OctomapManager::publishAll() {
     generateMarkerArray(world_frame_, &occupied_nodes, &free_nodes);
     occupied_nodes_pub_.publish(occupied_nodes);
     free_nodes_pub_.publish(free_nodes);
+  }
+
+  if (latch_topics_ || projection_line_pub_.getNumSubscribers() > 0) {
+    visualization_msgs::Marker proj_lines;
+    generateProjectionMarker(world_frame_, &proj_lines);
+    projection_line_pub_.publish(proj_lines);
   }
 
   if (latch_topics_ || binary_map_pub_.getNumSubscribers() > 0) {
@@ -276,11 +295,10 @@ void OctomapManager::publishAll() {
   if (use_tf_transforms_ && nearest_obstacle_pub_.getNumSubscribers() > 0) {
     Transformation robot_to_world;
     if (lookupTransformTf(robot_frame_, world_frame_, ros::Time::now(),
-                          &robot_to_world)) {
+                      &robot_to_world)) {
       Eigen::Vector3d robot_center = robot_to_world.getPosition();
       pcl::PointCloud<pcl::PointXYZ> point_cloud;
-      getOccupiedPointcloudInBoundingBox(robot_center, robot_size_,
-                                         &point_cloud);
+      getOccupiedPointcloudInBoundingBox(robot_center, robot_size_, &point_cloud);
       sensor_msgs::PointCloud2 cloud;
       pcl::toROSMsg(point_cloud, cloud);
       cloud.header.frame_id = world_frame_;
@@ -313,17 +331,17 @@ bool OctomapManager::getOctomapCallback(
 bool OctomapManager::loadOctomapCallback(
     volumetric_msgs::LoadMap::Request& request,
     volumetric_msgs::LoadMap::Response& response) {
-  std::string extension =
-      request.file_path.substr(request.file_path.find_last_of(".") + 1);
+  std::string extension = request.file_path.substr(
+      request.file_path.find_last_of(".") + 1);
   if (extension == "bt") {
     return loadOctomapFromFile(request.file_path);
   } else {
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(
         new pcl::PointCloud<pcl::PointXYZ>);
     if (extension == "pcd") {
-      pcl::io::loadPCDFile<pcl::PointXYZ>(request.file_path, *cloud);
+      pcl::io::loadPCDFile < pcl::PointXYZ > (request.file_path, *cloud);
     } else if (extension == "ply") {
-      pcl::io::loadPLYFile<pcl::PointXYZ>(request.file_path, *cloud);
+      pcl::io::loadPLYFile < pcl::PointXYZ > (request.file_path, *cloud);
     } else {
       ROS_ERROR_STREAM(
           "No known file extension (.bt, .pcd, .ply): " << request.file_path);
@@ -386,28 +404,6 @@ bool OctomapManager::setDisplayBoundsCallback(
   return true;
 }
 
-bool OctomapManager::getChangedPointsCallback(
-    volumetric_msgs::GetChangedPoints::Request& request,
-    volumetric_msgs::GetChangedPoints::Response& response) {
-  std::vector<Eigen::Vector3d> changed_points;
-  std::vector<bool> changed_states;
-  getChangedPoints(&changed_points, &changed_states);
-  if (changed_points.size() != changed_states.size()) {
-    std::cerr << "In getChangedPointsCallback changed_points and "
-                 "changed_states have different size!\n";
-    return false;
-  }
-  int size = changed_points.size();
-  response.size = size;
-  response.changed_points.resize(size);
-  response.changed_states.resize(size);
-  for (int i = 0; i < size; ++i) {
-    tf::vectorKindrToMsg(changed_points[i], &(response.changed_points[i]));
-    response.changed_states[i] = changed_states[i];
-  }
-  return true;
-}
-
 void OctomapManager::leftCameraInfoCallback(
     const sensor_msgs::CameraInfoPtr& left_info) {
   left_info_ = left_info;
@@ -456,6 +452,22 @@ void OctomapManager::insertPointcloudWithTf(
   }
 }
 
+void OctomapManager::setCamInfo(image_geometry::PinholeCameraModel& camInfo)
+{
+  setCameraModel(camInfo);
+}
+
+void OctomapManager::insertSaliencyImgWithTf(const sensor_msgs::ImageConstPtr& img)
+{
+  Transformation sensor_to_world;
+  std::string cam_frame_id = img->header.frame_id;
+  if (lookupTransform(cam_frame_id, world_frame_,
+                      img->header.stamp, &sensor_to_world )) {
+    insertSaliencyImage(sensor_to_world, img);
+  }
+}
+
+
 bool OctomapManager::lookupTransform(const std::string& from_frame,
                                      const std::string& to_frame,
                                      const ros::Time& timestamp,
@@ -474,22 +486,8 @@ bool OctomapManager::lookupTransformTf(const std::string& from_frame,
   tf::StampedTransform tf_transform;
 
   ros::Time time_to_lookup = timestamp;
-
-  // If this transform isn't possible at the time, then try to just look up
-  // the latest (this is to work with bag files and static transform publisher,
-  // etc).
-  if (!tf_listener_.canTransform(to_frame, from_frame, time_to_lookup)) {
-    ros::Duration timestamp_age = ros::Time::now() - time_to_lookup;
-    if (timestamp_age < tf_listener_.getCacheLength()) {
-      time_to_lookup = ros::Time(0);
-      ROS_WARN("Using latest TF transform instead of timestamp match.");
-    } else {
-      ROS_ERROR("Requested transform time older than cache limit.");
-      return false;
-    }
-  }
-
   try {
+    tf_listener_.waitForTransform(to_frame, from_frame, time_to_lookup, tf_update_latency);
     tf_listener_.lookupTransform(to_frame, from_frame, time_to_lookup,
                                  tf_transform);
   } catch (tf::TransformException& ex) {

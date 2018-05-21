@@ -182,10 +182,11 @@ Eigen::Matrix4d WorldBase::generateQ(double Tx, double left_cx, double left_cy,
 void WorldBase::insertPointcloud(
     const Transformation& T_G_sensor,
     const sensor_msgs::PointCloud2::ConstPtr& pointcloud_sensor) {
-  pcl::PointCloud<pcl::PointXYZ>::Ptr pointcloud_sensor_pcl(
-      new pcl::PointCloud<pcl::PointXYZ>);
-  pcl::fromROSMsg(*pointcloud_sensor, *pointcloud_sensor_pcl);
-  insertPointcloud(T_G_sensor, pointcloud_sensor_pcl);
+	
+	pcl::PointCloud<pcl::PointXYZ>::Ptr pointcloud_sensor_pcl(
+		new pcl::PointCloud<pcl::PointXYZ>);
+	pcl::fromROSMsg(*pointcloud_sensor, *pointcloud_sensor_pcl);
+	insertPointcloud(T_G_sensor, pointcloud_sensor_pcl);
 }
 
 // TODO(tcies) Make the virtual function insertPointcloudIntoMapImpl take a
@@ -210,6 +211,33 @@ void WorldBase::insertPointcloud(
     insertPointcloudIntoMapWithWeightsImpl(T_G_sensor, pointcloud_sensor,
                                            weights);
   }
+}
+
+void WorldBase::insertPointcloud(
+    const Transformation& T_G_sensor,
+    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& pointcloud_sensor) {
+      insertPointcloudColorIntoMapImpl(T_G_sensor, pointcloud_sensor);
+}
+
+void WorldBase::setCameraModel(image_geometry::PinholeCameraModel& camInfo)
+{
+  setCameraModelImpl(camInfo);
+}
+
+void WorldBase::insertSaliencyImage(
+    const Transformation& T_G_sensor,
+    const sensor_msgs::ImageConstPtr& img) {
+
+  cv_bridge::CvImagePtr cvImage;
+  cvImage = cv_bridge::toCvCopy(img, sensor_msgs::image_encodings::MONO8);
+  insertSaliencyImage(T_G_sensor, cvImage);
+
+}
+
+void WorldBase::insertSaliencyImage(
+    const Transformation& T_G_sensor,
+    const cv_bridge::CvImagePtr& img) {
+      insertSaliencyImageIntoMapImpl(T_G_sensor, img);
 }
 
 void WorldBase::computeWeights(const cv::Mat& disparity,

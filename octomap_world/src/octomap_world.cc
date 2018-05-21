@@ -27,6 +27,8 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+#include <ctime>
+
 #include "octomap_world/octomap_world.h"
 
 #include <glog/logging.h>
@@ -51,30 +53,13 @@ OctomapWorld::OctomapWorld() : OctomapWorld(OctomapParameters()) {}
 
 // Creates an octomap with the correct parameters.
 OctomapWorld::OctomapWorld(const OctomapParameters& params)
-    : robot_size_(Eigen::Vector3d::Ones()) {
+    : robot_size_(Eigen::Vector3d::Zero()) {
   setOctomapParameters(params);
-}
-
-// Creates deepcopy of OctomapWorld
-OctomapWorld::OctomapWorld(const OctomapWorld& rhs) {
-  OctomapParameters params;
-  rhs.getOctomapParameters(&params);
-  setOctomapParameters(params);
-  robot_size_ = rhs.getRobotSize();
-
-  // Get rhs octomap binary
-  std::stringstream datastream;
-  rhs.writeOctomapToBinaryConst(datastream);
-  // Write octomap binary
-  if (!octree_->readBinary(datastream)) {
-    std::cerr << "Could not copy octree!\n";
-  }
-  octree_->prune();
 }
 
 void OctomapWorld::resetMap() {
   if (!octree_) {
-    octree_.reset(new octomap::OcTree(params_.resolution));
+    octree_.reset(new octomap::SaliencyOcTree(params_.resolution));
   }
   octree_->clear();
 }
@@ -85,10 +70,10 @@ void OctomapWorld::setOctomapParameters(const OctomapParameters& params) {
   if (octree_) {
     if (octree_->getResolution() != params.resolution) {
       LOG(WARNING) << "Octomap resolution has changed! Resetting tree!";
-      octree_.reset(new octomap::OcTree(params.resolution));
+      octree_.reset(new octomap::SaliencyOcTree(params.resolution));
     }
   } else {
-    octree_.reset(new octomap::OcTree(params.resolution));
+    octree_.reset(new octomap::SaliencyOcTree(params.resolution));
   }
 
   octree_->setProbHit(params.probability_hit);
@@ -103,8 +88,268 @@ void OctomapWorld::setOctomapParameters(const OctomapParameters& params) {
   params_ = params;
 }
 
-void OctomapWorld::getOctomapParameters(OctomapParameters* params) const {
-  *params = params_;
+
+void OctomapWorld::setCameraModelImpl(image_geometry::PinholeCameraModel& camInfo)
+{
+  ROS_WARN("got camera model..");
+  CamModel = camInfo;
+  std::cout << CamModel.cameraInfo() << std::endl;
+  std::cout << CamModel.fx() << "," << CamModel.fy() << std::endl;
+}
+
+void OctomapWorld::updateSaliency(octomap::SaliencyOcTreeNode * n, unsigned char sal_val)
+{
+  octomap::SaliencyOcTreeNode::Saliency& saliency = n->getSaliency();
+  if (saliency.type == octomap::SaliencyOcTreeNode::Saliency::VOXEL_NORMAL)
+  {
+    float I_bar, I_bar_1, sal;
+
+    if(saliency.timestamp != salconfig_.timestamp) {
+      // first hit in this time step: reset all value
+      saliency.counter = 0;
+      saliency.timestamp = salconfig_.timestamp;
+      saliency.value_buff = saliency.value;
+    }
+
+    I_bar_1 = saliency.value_buff;
+    saliency.counter++;
+    I_bar = (I_bar_1 * (saliency.counter-1) + sal_val)/saliency.counter;
+    sal = saliency.value + salconfig_.alpha * (I_bar - I_bar_1);
+    saliency.value = (unsigned char)sal;
+    saliency.value_buff = I_bar;
+
+    unsigned char sal_thres = (unsigned char)salconfig_.saliency_threshold;
+    saliency.type = (saliency.value > sal_thres)?
+                     octomap::SaliencyOcTreeNode::Saliency::VOXEL_SALIENCY:
+                     octomap::SaliencyOcTreeNode::Saliency::VOXEL_NORMAL;
+    if (saliency.type == octomap::SaliencyOcTreeNode::Saliency::VOXEL_SALIENCY)
+    {
+      saliency.counter = 0; // use this for IOR
+    }
+  }
+}
+
+void OctomapWorld::updateIOR(void)
+{
+  double exp_beta = 1 + salconfig_.beta + salconfig_.beta * salconfig_.beta / 2.0; // approximation of exponential function
+  // scan the whole octomap
+  for (octomap::SaliencyOcTree::leaf_iterator it = octree_->begin_leafs(),
+                          end = octree_->end_leafs(); it != end; ++it) {
+    if (octree_->isNodeOccupied(*it)) {
+      octomap::SaliencyOcTreeNode& node = *it;
+      octomap::SaliencyOcTreeNode::Saliency& saliency = node.getSaliency();
+
+      if ((saliency.type == octomap::SaliencyOcTreeNode::Saliency::VOXEL_SALIENCY) &&
+          (saliency.timestamp != salconfig_.timestamp)){ // time check: not decrease voxels that just updated
+        saliency.counter++;
+        double sal_tmp = (double)(saliency.value);
+        double k = (double)saliency.counter;
+        exp_beta = 1 + k * salconfig_.beta + k * k * salconfig_.beta * salconfig_.beta / 2.0; // approximation of exponential function
+        sal_tmp *= exp_beta;
+
+        unsigned char sal_thres = (unsigned char)salconfig_.saliency_threshold;
+        saliency.type = (sal_tmp > sal_thres)?
+                          octomap::SaliencyOcTreeNode::Saliency::VOXEL_SALIENCY:
+                          octomap::SaliencyOcTreeNode::Saliency::VOXEL_RETIRED;
+        saliency.timestamp = salconfig_.timestamp;
+      }
+    }else{
+      // free voxels
+      octomap::SaliencyOcTreeNode& node = *it;
+      octomap::SaliencyOcTreeNode::Saliency& saliency = node.getSaliency();
+      saliency.value = 0;
+    }
+  }
+}
+
+void OctomapWorld::insertSaliencyImageIntoMapImpl(
+    const Transformation& T_G_sensor,
+    const cv_bridge::CvImagePtr& img){
+  salconfig_.timestamp++;
+  //return; // uncomment if want to come back to projection solution
+
+  clock_t begin_time = clock();
+
+  // copy the pose of the camera
+  camerapose_ = T_G_sensor;
+
+  const octomap::point3d origin = pointEigenToOctomap(T_G_sensor.getPosition());
+  ProjCloud.clear();
+  pcl::PointXYZ ptmp;
+  ptmp.x = origin.x();
+  ptmp.y = origin.y();
+  ptmp.z = origin.z();
+  ProjCloud.push_back(ptmp);
+
+  // TUNG PROJECTION
+  unsigned char sal_thres = (unsigned char)salconfig_.saliency_threshold;
+  octomap::point3d direction = octomap::point3d (0,0.0,0.0);
+  octomap::point3d obstacle(0,0,0);
+
+  cv::Mat &mat = img->image;
+  int width = mat.cols;
+  int height = mat.rows;
+  int count_success = 0;
+  int count_total = 0;
+  for (int i=0; i < width; i+=5) {
+    for (int j=0; j < height; j+=5) {
+      if (mat.at<unsigned char>(j, i) < sal_thres) continue;
+
+      count_total++;
+      cv::Point3d p;
+      cv::Point2d uv_rect;
+      uv_rect.x = i;
+      uv_rect.y = j;
+      p = CamModel.projectPixelTo3dRay(	uv_rect ) ;
+
+      // transform to world coordinate
+      // First, rotate the pointcloud into the world frame.
+      pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>());
+      pcl::PointXYZ pnt, pntTf;
+      pnt.x = p.x;
+      pnt.y = p.y;
+      pnt.z = p.z;
+      cloud->clear();
+      cloud->push_back(pnt);
+      pcl::transformPointCloud(*cloud, *cloud, T_G_sensor.getTransformationMatrix());
+      pntTf.x = cloud->points[0].x;
+      pntTf.y = cloud->points[0].y;
+      pntTf.z = cloud->points[0].z;
+
+      // ray cast
+      direction.x() = pntTf.x - origin.x();
+      direction.y() = pntTf.y - origin.y();
+      direction.z() = pntTf.z - origin.z();
+
+      if (octree_->castRay(origin, direction, obstacle, false, salconfig_.projection_limit)) // stop when meet uknown cell or reach a limit
+      {
+        if ((obstacle.z() > z_ground)) // && (obstacle.x() > 0) && (obstacle.x() < 4.0)) {
+        {
+          octomap::SaliencyOcTreeNode* n = octree_->search(obstacle);
+          if (octree_->isNodeOccupied(n)) {
+            updateSaliency(n, mat.at<unsigned char>(j, i)); //
+            count_success++;
+
+            pcl::PointXYZ p_tmp;
+            p_tmp.x = obstacle.x();
+            p_tmp.y = obstacle.y();
+            p_tmp.z = obstacle.z();
+            ProjCloud.push_back(p_tmp);
+          }
+        }
+      }
+    }
+  }
+
+  clock_t end_time = clock();
+  double elapsed_secs = double(end_time - begin_time) / CLOCKS_PER_SEC;
+  //std::cout << "[" << salconfig_.timestamp << "] Projected " << count_total << " points with " << count_success << " successful points in (s): " << elapsed_secs << std::endl;
+
+  if (salconfig_.beta < 0){
+    begin_time = clock();
+    updateIOR();
+    end_time = clock();
+    elapsed_secs = double(end_time - begin_time) / CLOCKS_PER_SEC;
+    //std::cout <<  "[" << salconfig_.timestamp << "] IOR (s) " << elapsed_secs << std::endl;
+  }
+}
+
+void OctomapWorld::generateProjectionMarker( const std::string& tf_frame,
+    visualization_msgs::Marker* line_list)
+{
+  static int id = 0;
+  if (ProjCloud.size() == 0) return;
+
+  line_list->header.frame_id = tf_frame;
+  line_list->header.stamp = ros::Time::now();
+  line_list->ns = "points_and_lines";
+  line_list->action = visualization_msgs::Marker::ADD;
+  line_list->pose.orientation.w = 1.0;
+  line_list->id = 0;
+  line_list->type = visualization_msgs::Marker::LINE_LIST;
+  line_list->scale.x = 0.1;
+  line_list->color.r = 0.0f;
+  line_list->color.g = 1.0f;
+  line_list->color.b = 0.0f;
+  line_list->color.a = 1.0;
+
+  geometry_msgs::Point p1, p2;
+  p1.x = ProjCloud.points[0].x;
+  p1.y = ProjCloud.points[0].y;
+  p1.z = ProjCloud.points[0].z;
+  line_list->points.push_back(p1);
+
+  int count = ProjCloud.size();
+
+  for (int i = 1; i < count; i++)
+  {
+    p2.x = ProjCloud.points[i].x;
+    p2.y = ProjCloud.points[i].y;
+    p2.z = ProjCloud.points[i].z;
+    // The line list needs two points for each line
+    line_list->points.push_back(p1);
+    line_list->points.push_back(p2);
+  }
+  line_list->points.push_back(p1);
+}
+
+
+void OctomapWorld::insertPointcloudColorIntoMapImpl(
+    const Transformation& T_G_sensor,
+    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud) {
+  // Remove NaN values, if any.
+  std::vector<int> indices;
+  pcl::removeNaNFromPointCloud(*cloud, *cloud, indices);
+
+  // First, rotate the pointcloud into the world frame.
+  pcl::transformPointCloud(*cloud, *cloud,
+                           T_G_sensor.getTransformationMatrix());
+  const octomap::point3d p_G_sensor =
+      pointEigenToOctomap(T_G_sensor.getPosition());
+
+  // Then add all the rays from this pointcloud.
+  // We do this as a batch operation - so first get all the keys in a set, then
+  // do the update in batch.
+  octomap::KeySet free_cells, occupied_cells;
+  for (pcl::PointCloud<pcl::PointXYZRGB>::const_iterator it = cloud->begin();
+       it != cloud->end(); ++it) {
+    const octomap::point3d p_G_point(it->x, it->y, it->z);
+    // First, check if we've already checked this.
+    octomap::OcTreeKey key = octree_->coordToKey(p_G_point);
+
+    if (occupied_cells.find(key) == occupied_cells.end()) {
+      // Check if this is within the allowed sensor range.
+      int res = castRay(p_G_sensor, p_G_point, &free_cells, &occupied_cells);
+    }
+  }
+
+  // Apply the new free cells and occupied cells from
+  updateOccupancy(&free_cells, &occupied_cells);
+
+  int tree_depth = octree_->getTreeDepth() + 1;
+
+  int free_voxels = 0, occupied_voxels = 0;
+  for (octomap::SaliencyOcTree::leaf_iterator it = octree_->begin_leafs(),
+                                      end = octree_->end_leafs();
+       it != end; ++it) {
+    double ix = it.getX(), iy = it.getY(), iz = it.getZ();
+    if ((ix <= maxx_) && (ix >= minx_) &&
+        (iy <= maxy_) && (iy >= miny_) &&
+        (iz <= maxz_) && (iz >= minz_)){
+      if (octree_->isNodeOccupied(*it)) occupied_voxels++;
+      else free_voxels++;
+    }
+  }
+
+  double res  = octree_->getResolution();
+  double total_voxels = 0;
+  if (res)
+    total_voxels = (maxx_ - minx_) * (maxy_ - miny_) * (maxz_ - minz_) / (res*res*res);
+
+  if (total_voxels){
+    exp_percent_ = ((float)free_voxels+(float)occupied_voxels)/total_voxels;
+    std::cout << "DEBUG:" << exp_percent_ << "\n";
+  }
 }
 
 void OctomapWorld::insertPointcloudIntoMapImpl(
@@ -138,6 +383,32 @@ void OctomapWorld::insertPointcloudIntoMapImpl(
 
   // Apply the new free cells and occupied cells from
   updateOccupancy(&free_cells, &occupied_cells);
+
+  int tree_depth = octree_->getTreeDepth() + 1;
+
+  int free_voxels = 0, occupied_voxels = 0;
+  for (octomap::SaliencyOcTree::leaf_iterator it = octree_->begin_leafs(),
+                                      end = octree_->end_leafs();
+       it != end; ++it) {
+    double ix = it.getX(), iy = it.getY(), iz = it.getZ();
+    if ((ix <= maxx_) && (ix >= minx_) &&
+        (iy <= maxy_) && (iy >= miny_) &&
+        (iz <= maxz_) && (iz >= minz_)){
+      if (octree_->isNodeOccupied(*it)) occupied_voxels++;
+      else free_voxels++;
+    }
+  }
+
+  double res  = octree_->getResolution();
+  double total_voxels = 0;
+  if (res)
+    total_voxels = (maxx_ - minx_) * (maxy_ - miny_) * (maxz_ - minz_) / (res*res*res);
+
+  if (total_voxels){
+    exp_percent_ = ((float)free_voxels+(float)occupied_voxels)/total_voxels;
+    //std::cout << "DEBUG:" << exp_percent_ << "\n";
+  }
+
 }
 
 void OctomapWorld::insertProjectedDisparityIntoMapImpl(
@@ -174,27 +445,27 @@ void OctomapWorld::insertProjectedDisparityIntoMapImpl(
   updateOccupancy(&free_cells, &occupied_cells);
 }
 
-void OctomapWorld::castRay(const octomap::point3d& sensor_origin,
+int OctomapWorld::castRay(const octomap::point3d& sensor_origin,
                            const octomap::point3d& point,
                            octomap::KeySet* free_cells,
-                           octomap::KeySet* occupied_cells) {
+                           octomap::KeySet* occupied_cells) const {
   CHECK_NOTNULL(free_cells);
   CHECK_NOTNULL(occupied_cells);
+
+  int res = 0;
 
   if (params_.sensor_max_range < 0.0 ||
       (point - sensor_origin).norm() <= params_.sensor_max_range) {
     // Cast a ray to compute all the free cells.
-    key_ray_.reset();
-    if (octree_->computeRayKeys(sensor_origin, point, key_ray_)) {
+    octomap::KeyRay key_ray;
+    if (octree_->computeRayKeys(sensor_origin, point, key_ray)) {
       if (params_.max_free_space == 0.0) {
-        free_cells->insert(key_ray_.begin(), key_ray_.end());
+        free_cells->insert(key_ray.begin(), key_ray.end());
       } else {
-        for (const auto& key : key_ray_) {
+        for (const auto& key: key_ray) {
           octomap::point3d voxel_coordinate = octree_->keyToCoord(key);
-          if ((voxel_coordinate - sensor_origin).norm() <
-                  params_.max_free_space ||
-              voxel_coordinate.z() >
-                  (sensor_origin.z() - params_.min_height_free_space)) {
+          if ((voxel_coordinate - sensor_origin).norm() < params_.max_free_space ||
+              voxel_coordinate.z() > (sensor_origin.z() - params_.min_height_free_space)) {
             free_cells->insert(key);
           }
         }
@@ -204,30 +475,32 @@ void OctomapWorld::castRay(const octomap::point3d& sensor_origin,
     octomap::OcTreeKey key;
     if (octree_->coordToKeyChecked(point, key)) {
       occupied_cells->insert(key);
+      res = 1;
     }
   } else {
     // If the ray is longer than the max range, just update free space.
     octomap::point3d new_end =
         sensor_origin +
         (point - sensor_origin).normalized() * params_.sensor_max_range;
-    key_ray_.reset();
-    if (octree_->computeRayKeys(sensor_origin, new_end, key_ray_)) {
+    octomap::KeyRay key_ray;
+    if (octree_->computeRayKeys(sensor_origin, new_end, key_ray)) {
       if (params_.max_free_space == 0.0) {
-        free_cells->insert(key_ray_.begin(), key_ray_.end());
+        free_cells->insert(key_ray.begin(), key_ray.end());
       } else {
-        for (const auto& key : key_ray_) {
+        for (const auto& key: key_ray) {
           octomap::point3d voxel_coordinate = octree_->keyToCoord(key);
-          if ((voxel_coordinate - sensor_origin).norm() <
-                  params_.max_free_space ||
-              voxel_coordinate.z() >
-                  (sensor_origin.z() - params_.min_height_free_space)) {
+          if ((voxel_coordinate - sensor_origin).norm() < params_.max_free_space ||
+              voxel_coordinate.z() > (sensor_origin.z() - params_.min_height_free_space)) {
             free_cells->insert(key);
           }
         }
       }
     }
   }
+
+  return res;
 }
+
 
 bool OctomapWorld::isValidPoint(const cv::Vec3f& point) const {
   // Check both for disparities explicitly marked as invalid (where OpenCV maps
@@ -263,20 +536,12 @@ void OctomapWorld::updateOccupancy(octomap::KeySet* free_cells,
   octree_->updateInnerOccupancy();
 }
 
-void OctomapWorld::enableTreatUnknownAsOccupied() {
-  params_.treat_unknown_as_occupied = true;
-}
-
-void OctomapWorld::disableTreatUnknownAsOccupied() {
-  params_.treat_unknown_as_occupied = false;
-}
-
 OctomapWorld::CellStatus OctomapWorld::getCellStatusBoundingBox(
     const Eigen::Vector3d& point,
     const Eigen::Vector3d& bounding_box_size) const {
   // First case: center point is unknown or occupied. Can just quit.
   CellStatus center_status = getCellStatusPoint(point);
-  if (center_status != CellStatus::kFree) {
+  if (center_status != CellStatus::kFree && params_.treat_unknown_as_occupied) {
     return center_status;
   }
 
@@ -284,9 +549,9 @@ OctomapWorld::CellStatus OctomapWorld::getCellStatusBoundingBox(
   octomap::OcTreeKey key;
   if (!octree_->coordToKeyChecked(pointEigenToOctomap(point), key)) {
     if (params_.treat_unknown_as_occupied) {
-      return CellStatus::kOccupied;
-    } else {
       return CellStatus::kUnknown;
+    } else {
+      return CellStatus::kOccupied;
     }
   }
 
@@ -297,29 +562,10 @@ OctomapWorld::CellStatus OctomapWorld::getCellStatusBoundingBox(
   octomap::point3d bbx_min = pointEigenToOctomap(bbx_min_eigen);
   octomap::point3d bbx_max = pointEigenToOctomap(bbx_max_eigen);
 
-  for (octomap::OcTree::leaf_bbx_iterator
+  for (octomap::SaliencyOcTree::leaf_bbx_iterator
            iter = octree_->begin_leafs_bbx(bbx_min, bbx_max),
            end = octree_->end_leafs_bbx();
        iter != end; ++iter) {
-    Eigen::Vector3d cube_center(iter.getX(), iter.getY(), iter.getZ());
-    int depth_level = iter.getDepth();
-    double cube_size = octree_->getNodeSize(depth_level);
-
-    // Check if it is really inside bounding box, since leaf_bbx_iterator begins
-    // "too early"
-    Eigen::Vector3d cube_lower_bound =
-        cube_center - (cube_size / 2) * Eigen::Vector3d::Ones();
-    Eigen::Vector3d cube_upper_bound =
-        cube_center + (cube_size / 2) * Eigen::Vector3d::Ones();
-    if (cube_upper_bound.x() < bbx_min.x() ||
-        cube_lower_bound.x() > bbx_max.x() ||
-        cube_upper_bound.y() < bbx_min.y() ||
-        cube_lower_bound.y() > bbx_max.y() ||
-        cube_upper_bound.z() < bbx_min.z() ||
-        cube_lower_bound.z() > bbx_max.z()) {
-      continue;
-    }
-
     if (octree_->isNodeOccupied(*iter)) {
       if (params_.filter_speckles && isSpeckleNode(iter.getKey())) {
         continue;
@@ -334,33 +580,12 @@ OctomapWorld::CellStatus OctomapWorld::getCellStatusBoundingBox(
   octomap::point3d_list unknown_centers;
   octree_->getUnknownLeafCenters(unknown_centers, bbx_min, bbx_max);
   if (unknown_centers.size() > 0) {
-    if (params_.treat_unknown_as_occupied) {
-      return CellStatus::kOccupied;
-    } else {
-      return CellStatus::kUnknown;
-    }
+    return CellStatus::kUnknown;
   }
   return CellStatus::kFree;
 }
 
 OctomapWorld::CellStatus OctomapWorld::getCellStatusPoint(
-    const Eigen::Vector3d& point) const {
-  octomap::OcTreeNode* node = octree_->search(point.x(), point.y(), point.z());
-  if (node == NULL) {
-    if (params_.treat_unknown_as_occupied) {
-      return CellStatus::kOccupied;
-    } else {
-      return CellStatus::kUnknown;
-    }
-  } else if (octree_->isNodeOccupied(node)) {
-    return CellStatus::kOccupied;
-  } else {
-    return CellStatus::kFree;
-  }
-}
-
-// Returns kUnknown even if treat_unknown_as_occupied is true.
-OctomapWorld::CellStatus OctomapWorld::getCellTrueStatusPoint(
     const Eigen::Vector3d& point) const {
   octomap::OcTreeNode* node = octree_->search(point.x(), point.y(), point.z());
   if (node == NULL) {
@@ -392,12 +617,92 @@ OctomapWorld::CellStatus OctomapWorld::getCellProbabilityPoint(
   }
 }
 
+OctomapWorld::CellStatus OctomapWorld::getCuriousGain(
+    const Eigen::Vector3d& point, double* gain) const {
+  octomap::SaliencyOcTreeNode* node = octree_->search(point.x(), point.y(), point.z());
+  *gain = 0;
+  if (node == NULL) {
+    return CellStatus::kUnknown;
+  } else {
+    if (octree_->isNodeOccupied(node)) {
+      octomap::SaliencyOcTreeNode::Saliency& saliency = node->getSaliency();
+      if (saliency.type == octomap::SaliencyOcTreeNode::Saliency::VOXEL_SALIENCY)
+        *gain = saliency.value;
+      return CellStatus::kOccupied;
+    } else {
+      return CellStatus::kFree;
+    }
+  }
+}
+
+void OctomapWorld::setVoxelToEval(const Eigen::Vector3d& origin, const Eigen::Vector3d& point, float z)  {
+  octomap::SaliencyOcTreeNode* node = octree_->search(point.x(), point.y(), point.z());
+  if (node != NULL) {
+    if (octree_->isNodeOccupied(node)) {
+      if (getVisibility(origin, point, false) == CellStatus::kFree) {
+          octomap::SaliencyOcTreeNode::Saliency& saliency = node->getSaliency();
+          saliency.viewpoint++;
+          float dens = getPixelOverArea(z);
+          saliency.density += (uint32_t)(dens);
+      }
+    }
+  }
+}
+
+bool OctomapWorld::getExplorationRate(double *e) {
+
+  if (start_timing_){
+    time_last_ = ros::Time::now();
+    start_timing_ = false;
+  }
+
+  double time_step = (ros::Time::now() - time_last_).toSec();
+  if (time_step > 0)
+    exp_percent_rate_ = (exp_percent_ - exp_percent_prev_) / time_step;
+  else
+    exp_percent_rate_ = 0;
+
+  time_past_ += time_step;
+  ROS_INFO("time_past_: %f/%f", time_past_, time_step);
+
+  e[0] = exp_percent_;
+  e[1] = exp_percent_rate_;
+  e[2] = time_past_;
+
+  exp_percent_prev_ = exp_percent_;
+  time_last_ = ros::Time::now();
+
+  return true;
+}
+
+double OctomapWorld::getVolumePercentage(double v) {
+  double res  = octree_->getResolution();
+  double total_voxels = 0;
+  if (res){
+    total_voxels = (maxx_ - minx_) * (maxy_ - miny_) * (maxz_ - minz_) / (res*res*res);
+    return (v/total_voxels);
+  }else{
+    return -1.0; //undefined
+  }
+}
+
+
+float OctomapWorld::getPixelOverArea(float z) {
+  float fx = CamModel.fx(), fy = CamModel.fy();
+  return (fx*fy)/(z * z); // number of pixels in a voxel
+}
+
+float OctomapWorld::getAreaOverPixel(float z) {
+  float fx = CamModel.fx(), fy = CamModel.fy();
+  return (z*z)/(fx * fy); // area over 1 pixe
+}
+
 OctomapWorld::CellStatus OctomapWorld::getLineStatus(
     const Eigen::Vector3d& start, const Eigen::Vector3d& end) const {
   // Get all node keys for this line.
   // This is actually a typedef for a vector of OcTreeKeys.
-  // Can't use the key_ray_ temp member here because this is a const function.
   octomap::KeyRay key_ray;
+
   octree_->computeRayKeys(pointEigenToOctomap(start), pointEigenToOctomap(end),
                           key_ray);
 
@@ -405,11 +710,7 @@ OctomapWorld::CellStatus OctomapWorld::getLineStatus(
   for (octomap::OcTreeKey key : key_ray) {
     octomap::OcTreeNode* node = octree_->search(key);
     if (node == NULL) {
-      if (params_.treat_unknown_as_occupied) {
-        return CellStatus::kOccupied;
-      } else {
-        return CellStatus::kUnknown;
-      }
+      return CellStatus::kUnknown;
     } else if (octree_->isNodeOccupied(node)) {
       return CellStatus::kOccupied;
     }
@@ -422,7 +723,6 @@ OctomapWorld::CellStatus OctomapWorld::getVisibility(
     bool stop_at_unknown_cell) const {
   // Get all node keys for this line.
   // This is actually a typedef for a vector of OcTreeKeys.
-  // Can't use the key_ray_ temp member here because this is a const function.
   octomap::KeyRay key_ray;
 
   octree_->computeRayKeys(pointEigenToOctomap(view_point),
@@ -494,84 +794,26 @@ OctomapWorld::CellStatus OctomapWorld::getLineStatusBoundingBox(
 
 double OctomapWorld::getResolution() const { return octree_->getResolution(); }
 
+/*
+void OctomapWorld::setFree(const Eigen::Vector3d& position,
+                           const Eigen::Vector3d& bounding_box_size) {
+  setLogOddsBoundingBox(position, bounding_box_size,
+                        octree_->getClampingThresMinLog());
+}
+*/
+
 void OctomapWorld::setFree(const Eigen::Vector3d& position,
                            const Eigen::Vector3d& bounding_box_size,
-                           const BoundHandling& insertion_method) {
+		           const Eigen::Vector3d& bounding_box_offset) {
   setLogOddsBoundingBox(position, bounding_box_size,
-                        octree_->getClampingThresMinLog(), insertion_method);
-}
-
-void OctomapWorld::setFree(const std::vector<Eigen::Vector3d>& positions,
-                           const Eigen::Vector3d& bounding_box_size,
-                           const BoundHandling& insertion_method) {
-  setLogOddsBoundingBox(positions, bounding_box_size,
-                        octree_->getClampingThresMinLog(), insertion_method);
+                        octree_->getClampingThresMinLog(),
+			bounding_box_offset);
 }
 
 void OctomapWorld::setOccupied(const Eigen::Vector3d& position,
-                               const Eigen::Vector3d& bounding_box_size,
-                               const BoundHandling& insertion_method) {
+                               const Eigen::Vector3d& bounding_box_size) {
   setLogOddsBoundingBox(position, bounding_box_size,
-                        octree_->getClampingThresMaxLog(), insertion_method);
-}
-
-void OctomapWorld::setOccupied(const std::vector<Eigen::Vector3d>& positions,
-                               const Eigen::Vector3d& bounding_box_size,
-                               const BoundHandling& insertion_method) {
-  setLogOddsBoundingBox(positions, bounding_box_size,
-                        octree_->getClampingThresMaxLog(), insertion_method);
-}
-
-void OctomapWorld::setBordersOccupied(const Eigen::Vector3d& cropping_size) {
-  // Crop map size by setting borders occupied
-  const bool lazy_eval = true;
-  const double log_odds_value = octree_->getClampingThresMaxLog();
-  octomap::KeySet occupied_keys;
-
-  Eigen::Vector3d map_center = getMapCenter();
-  Eigen::Vector3d map_size = getMapSize();
-  Eigen::Vector3d bbx_center;
-  Eigen::Vector3d bbx_size;
-
-  bbx_size = map_size;
-  bbx_size.x() = cropping_size.x() / 2;
-  bbx_center = map_center;
-  bbx_center.x() = map_center.x() - map_size.x() / 2 + cropping_size.x() / 4;
-  getKeysBoundingBox(bbx_center, bbx_size, &occupied_keys,
-                     BoundHandling::kIncludePartialBoxes);
-  bbx_center.x() = map_center.x() + map_size.x() / 2 - cropping_size.x() / 4;
-  getKeysBoundingBox(bbx_center, bbx_size, &occupied_keys,
-                     BoundHandling::kIncludePartialBoxes);
-
-  bbx_size = map_size;
-  bbx_size.y() = cropping_size.y() / 2;
-  bbx_center = map_center;
-  bbx_center.y() = map_center.y() - map_size.y() / 2 + cropping_size.y() / 4;
-  getKeysBoundingBox(bbx_center, bbx_size, &occupied_keys,
-                     BoundHandling::kIncludePartialBoxes);
-  bbx_center.y() = map_center.y() + map_size.y() / 2 - cropping_size.y() / 4;
-  getKeysBoundingBox(bbx_center, bbx_size, &occupied_keys,
-                     BoundHandling::kIncludePartialBoxes);
-
-  bbx_size = map_size;
-  bbx_size.z() = cropping_size.z() / 2;
-  bbx_center = map_center;
-  bbx_center.z() = map_center.z() - map_size.z() / 2 + cropping_size.z() / 4;
-  getKeysBoundingBox(bbx_center, bbx_size, &occupied_keys,
-                     BoundHandling::kIncludePartialBoxes);
-  bbx_center.z() = map_center.z() + map_size.z() / 2 - cropping_size.z() / 4;
-  getKeysBoundingBox(bbx_center, bbx_size, &occupied_keys,
-                     BoundHandling::kIncludePartialBoxes);
-
-  // Set all infeasible points occupied
-  for (octomap::OcTreeKey key : occupied_keys) {
-    octree_->setNodeValue(octree_->keyToCoord(key), log_odds_value, lazy_eval);
-  }
-
-  if (lazy_eval) {
-    octree_->updateInnerOccupancy();
-  }
-  octree_->prune();
+                        octree_->getClampingThresMaxLog());
 }
 
 void OctomapWorld::getOccupiedPointCloud(
@@ -579,7 +821,7 @@ void OctomapWorld::getOccupiedPointCloud(
   CHECK_NOTNULL(output_cloud)->clear();
   unsigned int max_tree_depth = octree_->getTreeDepth();
   double resolution = octree_->getResolution();
-  for (octomap::OcTree::leaf_iterator it = octree_->begin_leafs();
+  for (octomap::SaliencyOcTree::leaf_iterator it = octree_->begin_leafs();
        it != octree_->end_leafs(); ++it) {
     if (octree_->isNodeOccupied(*it)) {
       // If leaf is max depth add coordinates.
@@ -592,8 +834,8 @@ void OctomapWorld::getOccupiedPointCloud(
       // We use multiple points to visualize this filled volume.
       else {
         const unsigned int box_edge_length =
-            pow(2, max_tree_depth - it.getDepth() - 1);
-        const double bbx_offset = box_edge_length * resolution - resolution / 2;
+            pow(2,max_tree_depth - it.getDepth() - 1);
+        const double bbx_offset = box_edge_length * resolution - resolution/2;
         Eigen::Vector3d bbx_offset_vec(bbx_offset, bbx_offset, bbx_offset);
         Eigen::Vector3d center(it.getX(), it.getY(), it.getZ());
         Eigen::Vector3d bbx_min = center - bbx_offset_vec;
@@ -606,8 +848,9 @@ void OctomapWorld::getOccupiedPointCloud(
                y_position += resolution) {
             for (double z_position = bbx_min.z(); z_position <= bbx_max.z();
                  z_position += resolution) {
-              output_cloud->push_back(
-                  pcl::PointXYZ(x_position, y_position, z_position));
+              output_cloud->push_back(pcl::PointXYZ(x_position,
+                                                    y_position,
+                                                    z_position));
             }
           }
         }
@@ -618,12 +861,14 @@ void OctomapWorld::getOccupiedPointCloud(
 
 void OctomapWorld::getOccupiedPointcloudInBoundingBox(
     const Eigen::Vector3d& center, const Eigen::Vector3d& bounding_box_size,
-    pcl::PointCloud<pcl::PointXYZ>* output_cloud,
-    const BoundHandling& insertion_method) const {
+    pcl::PointCloud<pcl::PointXYZ>* output_cloud) const {
   CHECK_NOTNULL(output_cloud);
   output_cloud->clear();
 
   const double resolution = octree_->getResolution();
+  const double epsilon = 0.001;  // Small offset to not hit boundary of nodes.
+  Eigen::Vector3d epsilon_3d;
+  epsilon_3d.setConstant(epsilon);
 
   // Determine correct center of voxel.
   const Eigen::Vector3d center_corrected(
@@ -631,15 +876,10 @@ void OctomapWorld::getOccupiedPointcloudInBoundingBox(
       resolution * std::floor(center.y() / resolution) + resolution / 2.0,
       resolution * std::floor(center.z() / resolution) + resolution / 2.0);
 
-  Eigen::Vector3d bbx_min, bbx_max;
-
-  if (insertion_method == BoundHandling::kDefault) {
-    adjustBoundingBox(center_corrected, bounding_box_size, insertion_method,
-                      &bbx_min, &bbx_max);
-  } else {
-    adjustBoundingBox(center, bounding_box_size, insertion_method, &bbx_min,
-                      &bbx_max);
-  }
+  Eigen::Vector3d bbx_min =
+      center_corrected - bounding_box_size / 2 - epsilon_3d;
+  Eigen::Vector3d bbx_max =
+      center_corrected + bounding_box_size / 2 + epsilon_3d;
 
   for (double x_position = bbx_min.x(); x_position <= bbx_max.x();
        x_position += resolution) {
@@ -661,13 +901,13 @@ void OctomapWorld::getOccupiedPointcloudInBoundingBox(
 }
 
 void OctomapWorld::getAllFreeBoxes(
-    std::vector<std::pair<Eigen::Vector3d, double>>* free_box_vector) const {
+    std::vector<std::pair<Eigen::Vector3d, double> >* free_box_vector) const {
   const bool occupied_boxes = false;
   getAllBoxes(occupied_boxes, free_box_vector);
 }
 
 void OctomapWorld::getAllOccupiedBoxes(
-    std::vector<std::pair<Eigen::Vector3d, double>>* occupied_box_vector)
+    std::vector<std::pair<Eigen::Vector3d, double> >* occupied_box_vector)
     const {
   const bool occupied_boxes = true;
   getAllBoxes(occupied_boxes, occupied_box_vector);
@@ -675,10 +915,10 @@ void OctomapWorld::getAllOccupiedBoxes(
 
 void OctomapWorld::getAllBoxes(
     bool occupied_boxes,
-    std::vector<std::pair<Eigen::Vector3d, double>>* box_vector) const {
+    std::vector<std::pair<Eigen::Vector3d, double> >* box_vector) const {
   box_vector->clear();
   box_vector->reserve(octree_->size());
-  for (octomap::OcTree::leaf_iterator it = octree_->begin_leafs(),
+  for (octomap::SaliencyOcTree::leaf_iterator it = octree_->begin_leafs(),
                                       end = octree_->end_leafs();
        it != end; ++it) {
     Eigen::Vector3d cube_center(it.getX(), it.getY(), it.getZ());
@@ -693,126 +933,58 @@ void OctomapWorld::getAllBoxes(
   }
 }
 
-void OctomapWorld::getBox(const octomap::OcTreeKey& key,
-                          std::pair<Eigen::Vector3d, double>* box) const {
-  // bbx_iterator begins "too early", and the last leaf is the expected one
-  for (octomap::OcTree::leaf_bbx_iterator
-           it = octree_->begin_leafs_bbx(key, key),
-           end = octree_->end_leafs_bbx();
-       it != end; ++it) {
-    box->first = Eigen::Vector3d(it.getX(), it.getY(), it.getZ());
-    box->second = it.getSize();
-  }
-}
-
-void OctomapWorld::getFreeBoxesBoundingBox(
+/*
+void OctomapWorld::setLogOddsBoundingBox(
     const Eigen::Vector3d& position, const Eigen::Vector3d& bounding_box_size,
-    std::vector<std::pair<Eigen::Vector3d, double>>* free_box_vector) const {
-  const bool occupied_boxes = false;
-  getBoxesBoundingBox(occupied_boxes, position, bounding_box_size,
-                      free_box_vector);
-}
-
-void OctomapWorld::getOccupiedBoxesBoundingBox(
-    const Eigen::Vector3d& position, const Eigen::Vector3d& bounding_box_size,
-    std::vector<std::pair<Eigen::Vector3d, double>>* occupied_box_vector)
-    const {
-  const bool occupied_boxes = true;
-  getBoxesBoundingBox(occupied_boxes, position, bounding_box_size,
-                      occupied_box_vector);
-}
-
-void OctomapWorld::getBoxesBoundingBox(
-    bool occupied_boxes, const Eigen::Vector3d& position,
-    const Eigen::Vector3d& bounding_box_size,
-    std::vector<std::pair<Eigen::Vector3d, double>>* box_vector) const {
-  box_vector->clear();
-  if (bounding_box_size.maxCoeff() <= 0.0 || octree_->size() == 0) {
-    return;
-  }
-  const Eigen::Vector3d max_boxes =
-      bounding_box_size / octree_->getResolution();
-  const int max_vector_size = std::ceil(max_boxes.x()) *
-                              std::ceil(max_boxes.y()) *
-                              std::ceil(max_boxes.z());
-  box_vector->reserve(max_vector_size);
-
+    double log_odds_value) {
+  const bool lazy_eval = true;
+  const double resolution = octree_->getResolution();
   const double epsilon = 0.001;  // Small offset to not hit boundary of nodes.
   Eigen::Vector3d epsilon_3d;
   epsilon_3d.setConstant(epsilon);
 
-  Eigen::Vector3d bbx_min_eigen = position - bounding_box_size / 2 + epsilon_3d;
-  Eigen::Vector3d bbx_max_eigen = position + bounding_box_size / 2 - epsilon_3d;
+  Eigen::Vector3d bbx_min = position - bounding_box_size / 2 - epsilon_3d;
+  Eigen::Vector3d bbx_max = position + bounding_box_size / 2 + epsilon_3d;
 
-  octomap::point3d bbx_min = pointEigenToOctomap(bbx_min_eigen);
-  octomap::point3d bbx_max = pointEigenToOctomap(bbx_max_eigen);
-
-  for (octomap::OcTree::leaf_bbx_iterator
-           it = octree_->begin_leafs_bbx(bbx_min, bbx_max),
-           end = octree_->end_leafs_bbx();
-       it != end; ++it) {
-    Eigen::Vector3d cube_center(it.getX(), it.getY(), it.getZ());
-    int depth_level = it.getDepth();
-    double cube_size = octree_->getNodeSize(depth_level);
-
-    // Check if it is really inside bounding box, since leaf_bbx_iterator begins
-    // "too early"
-    Eigen::Vector3d cube_lower_bound =
-        cube_center - (cube_size / 2) * Eigen::Vector3d::Ones();
-    Eigen::Vector3d cube_upper_bound =
-        cube_center + (cube_size / 2) * Eigen::Vector3d::Ones();
-    if (cube_upper_bound.x() < bbx_min.x() ||
-        cube_lower_bound.x() > bbx_max.x() ||
-        cube_upper_bound.y() < bbx_min.y() ||
-        cube_lower_bound.y() > bbx_max.y() ||
-        cube_upper_bound.z() < bbx_min.z() ||
-        cube_lower_bound.z() > bbx_max.z()) {
-      continue;
-    }
-
-    if (octree_->isNodeOccupied(*it) && occupied_boxes) {
-      box_vector->emplace_back(cube_center, cube_size);
-    } else if (!octree_->isNodeOccupied(*it) && !occupied_boxes) {
-      box_vector->emplace_back(cube_center, cube_size);
-    }
-  }
-}
-
-void OctomapWorld::setLogOddsBoundingBox(
-    const Eigen::Vector3d& position, const Eigen::Vector3d& bounding_box_size,
-    double log_odds_value, const BoundHandling& insertion_method) {
-  std::vector<Eigen::Vector3d> positions;
-  positions.push_back(position);
-  setLogOddsBoundingBox(positions, bounding_box_size, log_odds_value,
-                        insertion_method);
-}
-
-void OctomapWorld::setLogOddsBoundingBox(
-    const std::vector<Eigen::Vector3d>& positions,
-    const Eigen::Vector3d& bounding_box_size, double log_odds_value,
-    const BoundHandling& insertion_method) {
-  const bool lazy_eval = true;
-  const double resolution = octree_->getResolution();
-  Eigen::Vector3d bbx_min, bbx_max;
-
-  for (const Eigen::Vector3d& position : positions) {
-    adjustBoundingBox(position, bounding_box_size, insertion_method, &bbx_min,
-                      &bbx_max);
-
-    for (double x_position = bbx_min.x(); x_position <= bbx_max.x();
-         x_position += resolution) {
-      for (double y_position = bbx_min.y(); y_position <= bbx_max.y();
-           y_position += resolution) {
-        for (double z_position = bbx_min.z(); z_position <= bbx_max.z();
-             z_position += resolution) {
-          octomap::point3d point =
-              octomap::point3d(x_position, y_position, z_position);
-          octree_->setNodeValue(point, log_odds_value, lazy_eval);
-        }
+  for (double x_position = bbx_min.x(); x_position <= bbx_max.x();
+       x_position += resolution) {
+    for (double y_position = bbx_min.y(); y_position <= bbx_max.y();
+         y_position += resolution) {
+      for (double z_position = bbx_min.z(); z_position <= bbx_max.z();
+           z_position += resolution) {
+        octomap::point3d point =
+            octomap::point3d(x_position, y_position, z_position);
+        octree_->setNodeValue(point, log_odds_value, lazy_eval);
       }
     }
   }
+  // This is necessary since lazy_eval is set to true.
+  octree_->updateInnerOccupancy();
+} */
 
+void OctomapWorld::setLogOddsBoundingBox(
+    const Eigen::Vector3d& position, const Eigen::Vector3d& bounding_box_size, double log_odds_value,
+    const Eigen::Vector3d& offset) {
+  const bool lazy_eval = true;
+  const double resolution = octree_->getResolution();
+  const double epsilon = 0.001;  // Small offset to not hit boundary of nodes.
+  Eigen::Vector3d epsilon_3d;
+  epsilon_3d.setConstant(epsilon);
+
+  Eigen::Vector3d bbx_min = position + offset - bounding_box_size / 2 - epsilon_3d;
+  Eigen::Vector3d bbx_max = position + offset + bounding_box_size / 2 + epsilon_3d;
+
+  for (double x_position = bbx_min.x(); x_position <= bbx_max.x();
+       x_position += resolution) {
+    for (double y_position = bbx_min.y(); y_position <= bbx_max.y();
+         y_position += resolution) {
+      for (double z_position = bbx_min.z(); z_position <= bbx_max.z();
+           z_position += resolution) {
+        octomap::point3d point = octomap::point3d(x_position, y_position, z_position);
+        octree_->setNodeValue(point, log_odds_value, lazy_eval);
+      }
+    }
+  }
   // This is necessary since lazy_eval is set to true.
   octree_->updateInnerOccupancy();
 }
@@ -835,24 +1007,43 @@ void OctomapWorld::setOctomapFromMsg(const octomap_msgs::Octomap& msg) {
 
 void OctomapWorld::setOctomapFromBinaryMsg(const octomap_msgs::Octomap& msg) {
   octree_.reset(
-      dynamic_cast<octomap::OcTree*>(octomap_msgs::binaryMsgToMap(msg)));
+      dynamic_cast<octomap::SaliencyOcTree*>(octomap_msgs::binaryMsgToMap(msg)));
 }
 
 void OctomapWorld::setOctomapFromFullMsg(const octomap_msgs::Octomap& msg) {
   octree_.reset(
-      dynamic_cast<octomap::OcTree*>(octomap_msgs::fullMsgToMap(msg)));
+      dynamic_cast<octomap::SaliencyOcTree*>(octomap_msgs::fullMsgToMap(msg)));
 }
 
 bool OctomapWorld::loadOctomapFromFile(const std::string& filename) {
+  if (!octree_) {
+    // TODO(helenol): Resolution shouldn't matter... I think. I'm not sure.
+    octree_.reset(new octomap::SaliencyOcTree(0.05));
+  }
   return octree_->readBinary(filename);
 }
 
 bool OctomapWorld::writeOctomapToFile(const std::string& filename) {
-  return octree_->writeBinary(filename);
-}
 
-bool OctomapWorld::writeOctomapToBinaryConst(std::ostream& s) const {
-  return octree_->writeBinaryConst(s);
+  std::string fn = filename + ".txt";
+  std::cout << "Save a log file in:" << fn << std::endl;
+  std::ofstream log_file( fn.c_str(), std::ofstream::out);
+  for (octomap::SaliencyOcTree::leaf_iterator it = octree_->begin_leafs(),
+                            end = octree_->end_leafs(); it != end; ++it) {
+    if (octree_->isNodeOccupied(*it)) {
+      octomap::SaliencyOcTreeNode& node = *it;
+      octomap::SaliencyOcTreeNode::Saliency& saliency = node.getSaliency();
+      log_file <<  it.getX() << "," << it.getY() << "," << it.getZ() << "," <<
+      (int)saliency.type  << "," <<
+      (int)saliency.value <<"," <<
+      saliency.viewpoint << "," <<
+      saliency.density << "\n";
+    }
+  }
+  log_file.close();
+  std::string fn1 = filename + ".ot";
+  std::cout << "Save an octomap file in:" << fn1 << std::endl;
+  return octree_->writeBinary(fn1);
 }
 
 bool OctomapWorld::isSpeckleNode(const octomap::OcTreeKey& key) const {
@@ -886,8 +1077,9 @@ void OctomapWorld::generateMarkerArray(
   CHECK_NOTNULL(occupied_nodes);
   CHECK_NOTNULL(free_nodes);
 
-  // Prune the octree first.
-  octree_->prune();
+  // disable prune
+  // it will not perform the prune even enable this function since I disable the comparison in saliencyoctree code
+  //octree_->prune();
   int tree_depth = octree_->getTreeDepth() + 1;
 
   // In the marker array, assign each node to its respective depth level, since
@@ -922,7 +1114,7 @@ void OctomapWorld::generateMarkerArray(
     free_nodes->markers[i] = occupied_nodes->markers[i];
   }
 
-  for (octomap::OcTree::leaf_iterator it = octree_->begin_leafs(),
+  for (octomap::SaliencyOcTree::leaf_iterator it = octree_->begin_leafs(),
                                       end = octree_->end_leafs();
        it != end; ++it) {
     geometry_msgs::Point cube_center;
@@ -936,16 +1128,26 @@ void OctomapWorld::generateMarkerArray(
 
     int depth_level = it.getDepth();
 
+    std_msgs::ColorRGBA marker_color;
+
     if (octree_->isNodeOccupied(*it)) {
       occupied_nodes->markers[depth_level].points.push_back(cube_center);
+
+#ifdef OCTOMAP_IS_COLORED
+      occupied_nodes->markers[depth_level].colors.push_back(
+             getEncodedColor(it));
+#else
       occupied_nodes->markers[depth_level].colors.push_back(
           percentToColor(colorizeMapByHeight(it.getZ(), min_z, max_z)));
+#endif
+
     } else {
       free_nodes->markers[depth_level].points.push_back(cube_center);
       free_nodes->markers[depth_level].colors.push_back(
           percentToColor(colorizeMapByHeight(it.getZ(), min_z, max_z)));
     }
   }
+
 
   for (int i = 0; i < tree_depth; ++i) {
     if (occupied_nodes->markers[i].points.size() > 0) {
@@ -962,265 +1164,90 @@ void OctomapWorld::generateMarkerArray(
   }
 }
 
-void OctomapWorld::convertUnknownToFree() {
-  Eigen::Vector3d min_bound, max_bound;
-  getMapBounds(&min_bound, &max_bound);
-  convertUnknownToFree(min_bound, max_bound);
+bool OctomapWorld::getHeatMapColor(float value, float &red, float &green, float &blue)
+{
+  // const int NUM_COLORS = 9;
+  // static float color[NUM_COLORS][3] = {
+  //                                     {255, 255, 204},
+  //                                     {255, 237, 160},
+  //                                     {254, 217, 118},
+  //                                     {254, 178,  76},
+  //                                     {253, 141,  60},
+  //                                     {252,  78,  42},
+  //                                     {227,  26,  28},
+  //                                     {189,   0,  38},
+  //                                     {128,   0,  38}}; //0-255 scale
+
+  const int NUM_COLORS = 6;
+  static float color[NUM_COLORS][3] = {
+                                      {254, 178,  76},
+                                      {253, 141,  60},
+                                      {252,  78,  42},
+                                      {227,  26,  28},
+                                      {189,   0,  38},
+                                      {128,   0,  38}}; //0-255 scale
+
+
+  // const int NUM_COLORS = 4;
+  // static float color[NUM_COLORS][3] = {
+  //   /*{0,0,1}, // blue*/
+  //   {0,1,1}, // cyan
+  //   {0,1,0}, //green
+  //   {1,1,0}, // yellow
+  //   {1,0,0}  //red
+  // };
+
+
+  float thres = (float)(salconfig_.saliency_threshold)/255;
+  value = (value - thres)/ (1 - thres); // stretch
+
+  int idx1;        // |-- Our desired color will be between these two indexes in "color".
+  int idx2;        // |
+  float fractBetween = 0;  // Fraction between "idx1" and "idx2" where our value is.
+
+  if(value <= 0) idx1 = idx2 = 0; // accounts for an input <=0
+  else if(value >= 1) idx1 = idx2 = NUM_COLORS-1; // accounts for an input >=0
+  else{
+    value = value * (NUM_COLORS-1);        // Will multiply value by 3.
+    idx1  = floor(value);                  // Our desired color will be after this index.
+    idx2  = idx1+1;                        // ... and before this index (inclusive).
+    fractBetween = value - (float)idx1;    // Distance between the two indexes (0-1).
+  }
+  red   = (color[idx2][0] - color[idx1][0])*fractBetween + color[idx1][0];
+  green = (color[idx2][1] - color[idx1][1])*fractBetween + color[idx1][1];
+  blue  = (color[idx2][2] - color[idx1][2])*fractBetween + color[idx1][2];
+  red   /= 255.0;
+  green /= 255.0;
+  blue  /= 255.0;
+  return true;
 }
 
-void OctomapWorld::convertUnknownToFree(const Eigen::Vector3d& min_bound,
-                                        const Eigen::Vector3d& max_bound) {
-  const bool lazy_eval = true;
-  const double log_odds_value = octree_->getClampingThresMinLog();
-  const double resolution = octree_->getResolution();
-  const double epsilon = 0.001;  // Small offset to not hit boundary of nodes.
-  Eigen::Vector3d epsilon_3d;
-  epsilon_3d.setConstant(epsilon);
-  octomap::point3d pmin = pointEigenToOctomap(min_bound + epsilon_3d);
-  octomap::point3d pmax = pointEigenToOctomap(max_bound - epsilon_3d);
-  // octree_->getUnknownLeafCenters would have been easier, but it doesn't get
-  // all the unknown points for some reason
-  for (float x = pmin.x() + epsilon; x < pmax.x(); x += resolution) {
-    for (float y = pmin.y() + epsilon; y < pmax.y(); y += resolution) {
-      for (float z = pmin.z() + epsilon; z < pmax.z(); z += resolution) {
-        octomap::OcTree::NodeType* res = octree_->search(x, y, z);
-        if (res == NULL) {
-          // Point is unknown, set it free
-          octree_->setNodeValue(x, y, z, log_odds_value, lazy_eval);
-        }
-      }
-    }
+std_msgs::ColorRGBA OctomapWorld::getEncodedColor(octomap::SaliencyOcTree::iterator it)
+{
+  octomap::SaliencyOcTreeNode& node = *it;
+  octomap::SaliencyOcTreeNode::Saliency& saliency = node.getSaliency();
+
+  std_msgs::ColorRGBA color;
+  color.a = 1;
+
+  if (saliency.type == octomap::SaliencyOcTreeNode::Saliency::VOXEL_SALIENCY)
+  {
+    getHeatMapColor(((float)saliency.value)/255, color.r, color.g, color.b);
   }
-  if (lazy_eval) {
-    octree_->updateInnerOccupancy();
+  else if (saliency.type == octomap::SaliencyOcTreeNode::Saliency::VOXEL_RETIRED)
+  {
+    color.r = 0;
+    color.g = 1;
+    color.b = 0;
   }
-  octree_->prune();
-}
-
-void OctomapWorld::inflateOccupied(const Eigen::Vector3d& safety_space) {
-  // Inflate all obstacles by safety_space, such that if a collision free
-  // trajectory is generated in this new space, it is guaranteed that
-  // safety_space around this trajectory is collision free in the original space
-  const bool lazy_eval = true;
-  const double log_odds_value = octree_->getClampingThresMaxLog();
-  const double resolution = octree_->getResolution();
-  const double epsilon = 0.001;  // Small offset to not hit boundary of nodes.
-  Eigen::Vector3d epsilon_3d;
-  epsilon_3d.setConstant(epsilon);
-
-  // Compute the maximal distance from the map's bounds where a small box has to
-  // be checked explicitly for its feasibility.
-  double bound_threshold = 0;
-  double resolution_multiple = resolution;
-  while (resolution_multiple < safety_space.minCoeff() / 4.0 - epsilon) {
-    bound_threshold += resolution_multiple;
-    resolution_multiple *= 2;
-  }
-  Eigen::Vector3d map_min_bound, map_max_bound;
-  getMapBounds(&map_min_bound, &map_max_bound);
-
-  std::vector<std::pair<Eigen::Vector3d, double>> free_boxes_vector;
-  getAllFreeBoxes(&free_boxes_vector);
-
-  Eigen::Vector3d actual_position;
-  octomap::KeySet occupied_keys;
-  octomap::OcTreeKey actual_key;
-
-  for (const std::pair<Eigen::Vector3d, double>& free_box : free_boxes_vector) {
-    // In case box size implicates that the whole box is infeasible (an obstacle
-    // is at a distance of at most 2 * box_size (from the center of the
-    // safety_space), otherwise the pruned free box would have been bigger)
-    if (free_box.second < safety_space.minCoeff() / 4.0 - epsilon) {
-      Eigen::Vector3d min_bound_distance = free_box.first - map_min_bound;
-      Eigen::Vector3d max_bound_distance = map_max_bound - free_box.first;
-      Eigen::Vector3d bound_distance =
-          min_bound_distance.cwiseMin(max_bound_distance);
-      if (bound_distance.minCoeff() > bound_threshold) {
-        // It's not at the map's bounds, therefore its small size depends on a
-        // near obstacle.
-        getKeysBoundingBox(free_box.first,
-                           Eigen::Vector3d::Constant(free_box.second),
-                           &occupied_keys, BoundHandling::kIncludePartialBoxes);
-        continue;
-      }
-    }
-
-    // In case the whole box is feasible, nothing has to be done with this box
-    if (getCellStatusBoundingBox(
-            free_box.first, safety_space + Eigen::Vector3d::Constant(
-                                               free_box.second)) != kOccupied) {
-      continue;
-    }
-
-    // In case the whole box can't be feasible (bounding box of safety_space
-    // around a point on one bound of the box would hit obstacle on the other
-    // side)
-    if (getCellStatusBoundingBox(
-            free_box.first,
-            Eigen::Vector3d::Constant(resolution - epsilon)
-                .cwiseMax(safety_space - Eigen::Vector3d::Constant(
-                                             free_box.second))) == kOccupied) {
-      getKeysBoundingBox(free_box.first,
-                         Eigen::Vector3d::Constant(free_box.second),
-                         &occupied_keys, BoundHandling::kIncludePartialBoxes);
-      continue;
-    }
-
-    // Otherwise find which obstacles cause some parts of the box to be
-    // infeasible, and find all those points through inflating those obstacles
-    std::vector<std::pair<Eigen::Vector3d, double>> occupied_boxes_vector;
-    getOccupiedBoxesBoundingBox(
-        free_box.first,
-        safety_space + Eigen::Vector3d::Constant(free_box.second),
-        &occupied_boxes_vector);
-    for (const std::pair<Eigen::Vector3d, double>& box_occupied :
-         occupied_boxes_vector) {
-      // Infeasible volume caused by box_occupied
-      Eigen::Vector3d infeasible_box_min =
-          box_occupied.first -
-          (Eigen::Vector3d::Constant(box_occupied.second) + safety_space) / 2;
-      Eigen::Vector3d infeasible_box_max =
-          box_occupied.first +
-          (Eigen::Vector3d::Constant(box_occupied.second) + safety_space) / 2;
-      // Volume of free_box
-      Eigen::Vector3d actual_box_min =
-          free_box.first - Eigen::Vector3d::Constant(free_box.second) / 2;
-      Eigen::Vector3d actual_box_max =
-          free_box.first + Eigen::Vector3d::Constant(free_box.second) / 2;
-      // Overlapping volume of box_infeasible and free_box
-      Eigen::Vector3d bbx_min = actual_box_min.cwiseMax(infeasible_box_min);
-      Eigen::Vector3d bbx_max = actual_box_max.cwiseMin(infeasible_box_max);
-      Eigen::Vector3d bbx_center = (bbx_min + bbx_max) / 2;
-      Eigen::Vector3d bbx_size = bbx_max - bbx_min;
-      getKeysBoundingBox(bbx_center, bbx_size, &occupied_keys,
-                         BoundHandling::kIncludePartialBoxes);
-    }
+  else
+  {
+    color.r = 0;
+    color.g = 0.5;
+    color.b = 1;
   }
 
-  // Inflate all obstacles at the map's borders, since the obstacles that are
-  // less than safety_space / 2 away from the boundary have to be inflated
-  // beyond the boundary.
-  Eigen::Vector3d direction, bounding_box_center, bounding_box_size;
-  std::vector<std::pair<Eigen::Vector3d, double>> occupied_boxes_vector;
-  for (unsigned i = 0u; i < 3u; i++) {
-    for (int sign = -1; sign <= 1; sign += 2) {
-      direction = Eigen::Vector3d::Zero();
-      direction[i] = sign;
-      bounding_box_center = getMapCenter();
-      bounding_box_center[i] +=
-          sign * (getMapSize()[i] - safety_space[i] / 2) / 2;
-      bounding_box_size = getMapSize();
-      bounding_box_size[i] = safety_space[i] / 2;
-      getOccupiedBoxesBoundingBox(bounding_box_center,
-                                  bounding_box_size - epsilon_3d,
-                                  &occupied_boxes_vector);
-      for (const std::pair<Eigen::Vector3d, double>& occupied_box :
-           occupied_boxes_vector) {
-        // Set just the inflated volume that is outside the original map bounds.
-        Eigen::Vector3d outer_bbx_min =
-            occupied_box.first -
-            (Eigen::Vector3d::Constant(occupied_box.second) + safety_space) / 2;
-        Eigen::Vector3d outer_bbx_max =
-            occupied_box.first +
-            (Eigen::Vector3d::Constant(occupied_box.second) + safety_space) / 2;
-        if (sign == -1) {
-          outer_bbx_max[i] = map_min_bound[i];
-        } else {
-          outer_bbx_min[i] = map_max_bound[i];
-        }
-        Eigen::Vector3d outer_bbx_center = (outer_bbx_min + outer_bbx_max) / 2;
-        Eigen::Vector3d outer_bbx_size =
-            outer_bbx_max - outer_bbx_min - epsilon_3d;
-        getKeysBoundingBox(outer_bbx_center, outer_bbx_size, &occupied_keys,
-                           BoundHandling::kIncludePartialBoxes);
-      }
-    }
-  }
-
-  // Set all infeasible points occupied
-  for (octomap::OcTreeKey key : occupied_keys) {
-    octree_->setNodeValue(octree_->keyToCoord(key), log_odds_value, lazy_eval);
-  }
-
-  if (lazy_eval) {
-    octree_->updateInnerOccupancy();
-  }
-  octree_->prune();
-}
-
-void OctomapWorld::getKeysBoundingBox(
-    const Eigen::Vector3d& position, const Eigen::Vector3d& bounding_box_size,
-    octomap::KeySet* keys, const BoundHandling& insertion_method) const {
-  const double resolution = octree_->getResolution();
-  Eigen::Vector3d bbx_min, bbx_max;
-  adjustBoundingBox(position, bounding_box_size, insertion_method, &bbx_min,
-                    &bbx_max);
-  Eigen::Vector3d actual_position;
-  octomap::OcTreeKey actual_key;
-  for (double x_position = bbx_min.x(); x_position <= bbx_max.x();
-       x_position += resolution) {
-    for (double y_position = bbx_min.y(); y_position <= bbx_max.y();
-         y_position += resolution) {
-      for (double z_position = bbx_min.z(); z_position <= bbx_max.z();
-           z_position += resolution) {
-        actual_position << x_position, y_position, z_position;
-        coordToKey(actual_position, &actual_key);
-        keys->insert(actual_key);
-      }
-    }
-  }
-}
-
-void OctomapWorld::adjustBoundingBox(const Eigen::Vector3d& position,
-                                     const Eigen::Vector3d& bounding_box_size,
-                                     const BoundHandling& insertion_method,
-                                     Eigen::Vector3d* bbx_min,
-                                     Eigen::Vector3d* bbx_max) const {
-  const double resolution = octree_->getResolution();
-  Eigen::Vector3d resolution_3d;
-  resolution_3d.setConstant(resolution);
-  const double epsilon = 0.001;  // Small offset to not hit boundary of nodes.
-  Eigen::Vector3d epsilon_3d;
-  epsilon_3d.setConstant(epsilon);
-
-  if (insertion_method == BoundHandling::kDefault) {
-    *bbx_min = position - bounding_box_size / 2 - epsilon_3d;
-    *bbx_max = position + bounding_box_size / 2 + epsilon_3d;
-
-  } else if (insertion_method == BoundHandling::kIncludePartialBoxes) {
-    // If the bbx is exactly on boundary of a node, reducing the bbx by
-    // epsilon_3d will avoid to include the adjacent nodes as well.
-    *bbx_min = position - bounding_box_size / 2 + epsilon_3d;
-    *bbx_max = position + bounding_box_size / 2 - epsilon_3d;
-    // Align positions to the center of the octree boxes
-    octomap::OcTreeKey bbx_min_key =
-        octree_->coordToKey(pointEigenToOctomap(*bbx_min));
-    octomap::OcTreeKey bbx_max_key =
-        octree_->coordToKey(pointEigenToOctomap(*bbx_max));
-    *bbx_min = pointOctomapToEigen(octree_->keyToCoord(bbx_min_key));
-    *bbx_max = pointOctomapToEigen(octree_->keyToCoord(bbx_max_key));
-    // Add small offset so that all boxes are considered in the for-loops
-    *bbx_min -= epsilon_3d;
-    *bbx_max += epsilon_3d;
-  } else if (insertion_method == BoundHandling::kIgnorePartialBoxes) {
-    // If the bbx is exactly on boundary of a node, incrementing the bbx by
-    // epsilon_3d will include that node as well.
-    *bbx_min = position - bounding_box_size / 2 - epsilon_3d;
-    *bbx_max = position + bounding_box_size / 2 + epsilon_3d;
-    // Align positions to the center of the octree boxes
-    octomap::OcTreeKey bbx_min_key =
-        octree_->coordToKey(pointEigenToOctomap(*bbx_min));
-    octomap::OcTreeKey bbx_max_key =
-        octree_->coordToKey(pointEigenToOctomap(*bbx_max));
-    *bbx_min = pointOctomapToEigen(octree_->keyToCoord(bbx_min_key));
-    *bbx_max = pointOctomapToEigen(octree_->keyToCoord(bbx_max_key));
-    // Crop bounding box so that it excludes the partially included boxes
-    *bbx_min += resolution_3d;
-    *bbx_max -= resolution_3d;
-    // Add small offset so that all boxes are considered in the for-loops
-    *bbx_min -= epsilon_3d;
-    *bbx_max += epsilon_3d;
-  }
+  return color;
 }
 
 double OctomapWorld::colorizeMapByHeight(double z, double min_z,
@@ -1231,7 +1258,7 @@ double OctomapWorld::colorizeMapByHeight(double z, double min_z,
 std_msgs::ColorRGBA OctomapWorld::percentToColor(double h) const {
   // Helen's note: direct copy from OctomapProvider.
   std_msgs::ColorRGBA color;
-  color.a = 1.0;
+  color.a = 0.1;
   // blend over HSV-values (more colors)
 
   double s = 1.0;
@@ -1324,52 +1351,6 @@ void OctomapWorld::getMapBounds(Eigen::Vector3d* min_bound,
   *max_bound = Eigen::Vector3d(max_x, max_y, max_z);
 }
 
-bool OctomapWorld::getNearestFreePoint(const Eigen::Vector3d& position,
-                                       Eigen::Vector3d* free_position) const {
-  const double epsilon = 1e-3;  // Small offset to not hit boundaries
-  // Check if the given position is already unoccupied
-  if (getCellStatusPoint(position) == CellStatus::kFree) {
-    *free_position = position;
-    return true;
-  }
-
-  const double resolution = octree_->getResolution();
-  double bbx_size = resolution;
-  std::vector<std::pair<Eigen::Vector3d, double>> free_box_vector;
-  // Find the nearest free boxes, enlarge searching volume around position until
-  // there is something unoccupied
-  while (free_box_vector.empty() && bbx_size < getMapSize().maxCoeff()) {
-    getFreeBoxesBoundingBox(position, Eigen::Vector3d::Constant(bbx_size),
-                            &free_box_vector);
-    bbx_size += resolution;
-  }
-  if (free_box_vector.empty()) {
-    return false;  // There are no free boxes in the octomap
-  }
-
-  // Overestimate minimum distance between desired position and free position
-  double min_distance = bbx_size;
-  Eigen::Vector3d actual_distance;
-  Eigen::Vector3d actual_nearest_position;
-  for (const std::pair<Eigen::Vector3d, double>& free_box : free_box_vector) {
-    // Distance between center of box and position
-    actual_distance = position - free_box.first;
-    // Limit the distance such that it is still in the box
-    actual_distance = actual_distance.cwiseMin(
-        Eigen::Vector3d::Constant(free_box.second / 2 - epsilon));
-    actual_distance = actual_distance.cwiseMax(
-        Eigen::Vector3d::Constant(-free_box.second / 2 + epsilon));
-    // Nearest position to the desired position
-    actual_nearest_position = free_box.first + actual_distance;
-    // Check if this is the best position found so far
-    if ((position - actual_nearest_position).norm() < min_distance) {
-      min_distance = (position - actual_nearest_position).norm();
-      *free_position = actual_nearest_position;
-    }
-  }
-  return true;
-}
-
 void OctomapWorld::setRobotSize(const Eigen::Vector3d& robot_size) {
   robot_size_ = robot_size;
 }
@@ -1439,17 +1420,32 @@ void OctomapWorld::getChangedPoints(
   octree_->resetChangeDetection();
 }
 
-void OctomapWorld::coordToKey(const Eigen::Vector3d& coord,
-                              octomap::OcTreeKey* key) const {
-  octomap::point3d position(coord.x(), coord.y(), coord.z());
-  *key = octree_->coordToKey(position);
+
+void OctomapWorld::clearBBX(
+    const Eigen::Vector3d& point,
+    const Eigen::Vector3d& bounding_box_size) {
+  Eigen::Vector3d bbx_min_eigen = point - bounding_box_size / 2;
+  Eigen::Vector3d bbx_max_eigen = point + bounding_box_size / 2;
+
+  octomap::point3d bbx_min = pointEigenToOctomap(bbx_min_eigen);
+  octomap::point3d bbx_max = pointEigenToOctomap(bbx_max_eigen);
+
+  float thresMin = octree_->getClampingThresMinLog();
+  for (octomap::SaliencyOcTree::leaf_bbx_iterator iter = octree_->begin_leafs_bbx(bbx_min, bbx_max), end = octree_->end_leafs_bbx();
+       iter != end; ++iter) {
+    //From: updateNode (const OcTreeKey &key, bool occupied, bool lazy_eval=false), there is also: updateNode (const point3d &value, float log_odds_update, bool lazy_eval=false)
+    //octree_->updateNode(iter.getKey(), false); //Seems to act additively to current knowledge (in this iteration and the ones before) and not completely override the map
+    iter->setLogOdds(/*octomap::logodds(*/thresMin/*)*/);
+    //iter->updateTimestamp();
+  }
+  octree_->updateInnerOccupancy(); //TODOTry not to call it a
+  //TODO: which is faster? (setLogOdds+updateInner or updateNode), most probably the 2nd for small bbx
 }
 
-void OctomapWorld::keyToCoord(const octomap::OcTreeKey& key,
-                              Eigen::Vector3d* coord) const {
-  octomap::point3d position;
-  position = octree_->keyToCoord(key);
-  *coord << position.x(), position.y(), position.z();
-}
+// unsigned int OctomapWorld::getLastUpdateTime(){
+//   //return octree_->getLastUpdateTime();
+//   return 0;
+// }
+
 
 }  // namespace volumetric_mapping

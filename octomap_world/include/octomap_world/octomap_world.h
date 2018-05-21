@@ -33,22 +33,33 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <string>
 
 #include <octomap/octomap.h>
+#include <octomap/SaliencyOcTree.h>
+
 #include <octomap_msgs/Octomap.h>
 #include <std_msgs/ColorRGBA.h>
 #include <visualization_msgs/MarkerArray.h>
 #include <volumetric_map_base/world_base.h>
+#include <cv_bridge/cv_bridge.h>
+#include <visualization_msgs/Marker.h>
 
 namespace volumetric_mapping {
 
-// Different behaviours for setting log_odds_value in a bounding box
-enum BoundHandling {
-  kDefault,
-  // kIncludePartialBoxes: consider also boxes that are only partially included
-  // in bounding box.
-  kIncludePartialBoxes,
-  // kIgnorePartialBoxes: consider only boxes that are fully included in
-  // bounding box.
-  kIgnorePartialBoxes
+struct SaliencyParameters{
+  SaliencyParameters():
+    alpha(0.8),
+    beta(-0.0005),  //0.0005
+    saliency_threshold(200),
+    timestamp(0),
+    projection_limit(5.0),
+    ground_limit(-10){
+    // ... can initialize default numbers here
+  }
+  double alpha; // ratio to mix 2 saliency values
+  double beta; // decay coefficient for IOR
+  int saliency_threshold; // larger than this value will be consider as saliency voxel
+  int timestamp; // hold the timestep of the system, increase every new saliency image
+  double projection_limit; // limit the projection distance of ray casting (-1 for unlimited)
+  double ground_limit;
 };
 
 struct OctomapParameters {
@@ -122,10 +133,6 @@ class OctomapWorld : public WorldBase {
 
   // Creates an octomap with the correct parameters.
   OctomapWorld(const OctomapParameters& params);
-
-  // Deep copy of OctomapWorld rhs
-  OctomapWorld(const OctomapWorld& rhs);
-
   virtual ~OctomapWorld() {}
 
   // General map management.
@@ -134,36 +141,27 @@ class OctomapWorld : public WorldBase {
   // Creates an octomap if one is not yet created or if the resolution of the
   // current varies from the parameters requested.
   void setOctomapParameters(const OctomapParameters& params);
-  void getOctomapParameters(OctomapParameters* params) const;
 
   // Virtual functions for manually manipulating map probabilities.
-  virtual void setFree(
-      const Eigen::Vector3d& position, const Eigen::Vector3d& bounding_box_size,
-      const BoundHandling& insertion_method = BoundHandling::kDefault);
-  virtual void setFree(
-      const std::vector<Eigen::Vector3d>& positions,
-      const Eigen::Vector3d& bounding_box_size,
-      const BoundHandling& insertion_method = BoundHandling::kDefault);
-  virtual void setOccupied(
-      const Eigen::Vector3d& position, const Eigen::Vector3d& bounding_box_size,
-      const BoundHandling& insertion_method = BoundHandling::kDefault);
-  virtual void setOccupied(
-      const std::vector<Eigen::Vector3d>& positions,
-      const Eigen::Vector3d& bounding_box_size,
-      const BoundHandling& insertion_method = BoundHandling::kDefault);
-  virtual void setBordersOccupied(const Eigen::Vector3d& cropping_size);
+  virtual void setFree(const Eigen::Vector3d& position,
+                       const Eigen::Vector3d& bounding_box_size,
+		       const Eigen::Vector3d& bounding_box_offset = Eigen::Vector3d(0.0,0.0,0.0));
+  virtual void setOccupied(const Eigen::Vector3d& position,
+                           const Eigen::Vector3d& bounding_box_size);
 
-  // Virtual functions for outputting map status. If treat_unknown_as_occupied
-  // is set to true, those functions return kOccupied instead of kUnknown.
-  void enableTreatUnknownAsOccupied();
-  void disableTreatUnknownAsOccupied();
+  // Virtual functions for outputting map status.
   virtual CellStatus getCellStatusBoundingBox(
       const Eigen::Vector3d& point,
       const Eigen::Vector3d& bounding_box_size) const;
   virtual CellStatus getCellStatusPoint(const Eigen::Vector3d& point) const;
-  virtual CellStatus getCellTrueStatusPoint(const Eigen::Vector3d& point) const;
   virtual CellStatus getCellProbabilityPoint(const Eigen::Vector3d& point,
                                              double* probability) const;
+  virtual CellStatus getCuriousGain( const Eigen::Vector3d& point,
+                                     double* gain) const;
+
+  void setVoxelToEval(const Eigen::Vector3d& origin, const Eigen::Vector3d& point, float z);
+
+
   virtual CellStatus getLineStatus(const Eigen::Vector3d& start,
                                    const Eigen::Vector3d& end) const;
   virtual CellStatus getVisibility(const Eigen::Vector3d& view_point,
@@ -176,8 +174,7 @@ class OctomapWorld : public WorldBase {
       pcl::PointCloud<pcl::PointXYZ>* output_cloud) const;
   virtual void getOccupiedPointcloudInBoundingBox(
       const Eigen::Vector3d& center, const Eigen::Vector3d& bounding_box_size,
-      pcl::PointCloud<pcl::PointXYZ>* output_cloud,
-      const BoundHandling& insertion_method = BoundHandling::kDefault) const;
+      pcl::PointCloud<pcl::PointXYZ>* output_cloud) const;
 
   // Structure: vector of pairs, key is the cube center and double is the
   // dimension of each side.
@@ -185,23 +182,12 @@ class OctomapWorld : public WorldBase {
       std::vector<std::pair<Eigen::Vector3d, double> >* free_box_vector) const;
   void getAllOccupiedBoxes(std::vector<std::pair<Eigen::Vector3d, double> >*
                                occupied_box_vector) const;
-  void getBox(const octomap::OcTreeKey& key,
-              std::pair<Eigen::Vector3d, double>* box) const;
-  void getFreeBoxesBoundingBox(
-      const Eigen::Vector3d& position, const Eigen::Vector3d& bounding_box_size,
-      std::vector<std::pair<Eigen::Vector3d, double> >* free_box_vector) const;
-  void getOccupiedBoxesBoundingBox(
-      const Eigen::Vector3d& position, const Eigen::Vector3d& bounding_box_size,
-      std::vector<std::pair<Eigen::Vector3d, double> >* occupied_box_vector)
-      const;
 
   virtual double getResolution() const;
   virtual Eigen::Vector3d getMapCenter() const;
   virtual Eigen::Vector3d getMapSize() const;
   virtual void getMapBounds(Eigen::Vector3d* min_bound,
                             Eigen::Vector3d* max_bound) const;
-  bool getNearestFreePoint(const Eigen::Vector3d& position,
-                           Eigen::Vector3d* free_position) const;
 
   // Collision checking with robot model. Implemented as a box with our own
   // implementation.
@@ -224,21 +210,19 @@ class OctomapWorld : public WorldBase {
   bool loadOctomapFromFile(const std::string& filename);
   bool writeOctomapToFile(const std::string& filename);
 
-  // Writing binary octomap to stream
-  bool writeOctomapToBinaryConst(std::ostream& s) const;
-
   // Helpers for publishing.
   void generateMarkerArray(const std::string& tf_frame,
                            visualization_msgs::MarkerArray* occupied_nodes,
                            visualization_msgs::MarkerArray* free_nodes);
 
-  // Convert all unknown space into free space.
-  void convertUnknownToFree();
-  // Convert unknown space between min_bound and max_bound into free space.
-  void convertUnknownToFree(const Eigen::Vector3d& min_bound,
-                            const Eigen::Vector3d& max_bound);
-  // Inflation of all obstacles by safety_space.
-  void inflateOccupied(const Eigen::Vector3d& safety_space);
+  // Add voxel information and some APIs
+  pcl::PointCloud<pcl::PointXYZ> ProjCloud;
+  void generateProjectionMarker( const std::string& tf_frame,
+     visualization_msgs::Marker* line_list);
+  void updateIOR(void);
+
+  void updateSaliency(octomap::SaliencyOcTreeNode * n, unsigned char sal_val);
+
 
   // Change detection -- when this is called, this resets the change detection
   // tracking within the map. So 2 consecutive calls will produce first the
@@ -249,12 +233,25 @@ class OctomapWorld : public WorldBase {
   // order for this to work!
   void getChangedPoints(std::vector<Eigen::Vector3d>* changed_points,
                         std::vector<bool>* changed_states);
-  void enableChangeDetection() { octree_->enableChangeDetection(true); }
-  void disableChangeDetection() { octree_->enableChangeDetection(false); }
 
-  void coordToKey(const Eigen::Vector3d& coord, octomap::OcTreeKey* key) const;
-  void keyToCoord(const octomap::OcTreeKey& key, Eigen::Vector3d* coord) const;
+  void clearBBX(
+      const Eigen::Vector3d& point,
+      const Eigen::Vector3d& bounding_box_size);
 
+  float getAreaOverPixel(float z) ;
+  float getPixelOverArea(float z) ;
+  bool getExplorationRate(double *e);
+  double getVolumePercentage(double v);
+  void setWorkspaceBox(double minx, double miny, double minz, double maxx, double maxy, double maxz){
+    minx_ = minx;
+    miny_ = miny;
+    minz_ = minz;
+    maxx_ = maxx;
+    maxy_ = maxy;
+    maxz_ = maxz;
+  }
+
+  bool getHeatMapColor(float value, float &red, float &green, float &blue);
  protected:
   // Actual implementation for inserting disparity data.
   virtual void insertProjectedDisparityIntoMapImpl(
@@ -265,43 +262,41 @@ class OctomapWorld : public WorldBase {
       const Transformation& T_G_sensor,
       const pcl::PointCloud<pcl::PointXYZ>::Ptr& pointcloud);
 
+  virtual void insertPointcloudColorIntoMapImpl(
+      const Transformation& T_G_sensor,
+      const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& pointcloud);
+
+  virtual void insertSaliencyImageIntoMapImpl(
+      const Transformation& T_G_sensor,
+      const cv_bridge::CvImagePtr& img);
+
+  image_geometry::PinholeCameraModel CamModel;
+  virtual void setCameraModelImpl(image_geometry::PinholeCameraModel& camInfo);
+
+
+
+
   // Check if the node at the specified key has neighbors or not.
   bool isSpeckleNode(const octomap::OcTreeKey& key) const;
 
   // Manually affect the probabilities of areas within a bounding box.
-  void setLogOddsBoundingBox(
-      const Eigen::Vector3d& position, const Eigen::Vector3d& bounding_box_size,
-      double log_odds_value,
-      const BoundHandling& insertion_method = BoundHandling::kDefault);
-  void setLogOddsBoundingBox(
-      const std::vector<Eigen::Vector3d>& positions,
-      const Eigen::Vector3d& bounding_box_size, double log_odds_value,
-      const BoundHandling& insertion_method = BoundHandling::kDefault);
+ /* void setLogOddsBoundingBox(const Eigen::Vector3d& position,
+                             const Eigen::Vector3d& bounding_box_size,
+                             double log_odds_value); */
+  // Manually affect the probabilities of areas within a bounding box.
+  void setLogOddsBoundingBox(const Eigen::Vector3d& position,
+                             const Eigen::Vector3d& bounding_box_size,
+                             double log_odds_value,
+			     const Eigen::Vector3d& offset = Eigen::Vector3d(0.0,0.0,0.0));
 
   void getAllBoxes(
       bool occupied_boxes,
       std::vector<std::pair<Eigen::Vector3d, double> >* box_vector) const;
-  void getBoxesBoundingBox(bool occupied_boxes, const Eigen::Vector3d& position,
-                           const Eigen::Vector3d& bounding_box_size,
-                           std::vector<std::pair<Eigen::Vector3d, double> >*
-                               occupied_box_vector) const;
-
-  void getKeysBoundingBox(
-      const Eigen::Vector3d& position, const Eigen::Vector3d& bounding_box_size,
-      octomap::KeySet* keys,
-      const BoundHandling& insertion_method = BoundHandling::kDefault) const;
-
-  // Helper function to align bounding_box
-  void adjustBoundingBox(const Eigen::Vector3d& position,
-                         const Eigen::Vector3d& bounding_box_size,
-                         const BoundHandling& insertion_method,
-                         Eigen::Vector3d* bbx_min,
-                         Eigen::Vector3d* bbx_max) const;
 
   // Helper functions for building up a map from sensor data.
-  void castRay(const octomap::point3d& sensor_origin,
+  int castRay(const octomap::point3d& sensor_origin,
                const octomap::point3d& point, octomap::KeySet* free_cells,
-               octomap::KeySet* occupied_cells);
+               octomap::KeySet* occupied_cells) const;
   void updateOccupancy(octomap::KeySet* free_cells,
                        octomap::KeySet* occupied_cells);
   bool isValidPoint(const cv::Vec3f& point) const;
@@ -315,17 +310,33 @@ class OctomapWorld : public WorldBase {
   bool checkSinglePoseCollision(const Eigen::Vector3d& robot_position) const;
 
   std_msgs::ColorRGBA percentToColor(double h) const;
+  std_msgs::ColorRGBA getEncodedColor(octomap::SaliencyOcTree::iterator it);
 
-  std::shared_ptr<octomap::OcTree> octree_;
+
+
+  std::shared_ptr<octomap::SaliencyOcTree> octree_;
 
   OctomapParameters params_;
-
+  SaliencyParameters salconfig_;
+  Transformation camerapose_;
   // For collision checking.
   Eigen::Vector3d robot_size_;
 
-  // Temporary variable for KeyRay since it resizes it to a HUGE value by
-  // default. Thanks a lot to @xiaopenghuang for catching this.
-  octomap::KeyRay key_ray_;
+  double exp_percent_ = 0;
+  double exp_percent_rate_ = 0;
+  double exp_percent_prev_ = 0;
+  ros::Time time_last_;
+  double time_past_ = 0;
+  bool start_timing_ = true;
+  double minx_=0;
+  double miny_=0;
+  double minz_=0;
+  double maxx_=0;
+  double maxy_=0;
+  double maxz_=0;
+
+  double z_ground=-100;
+
 };
 
 }  // namespace volumetric_mapping

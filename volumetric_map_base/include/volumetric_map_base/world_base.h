@@ -39,6 +39,14 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <pcl/conversions.h>
 #include <Eigen/StdVector>
 
+#include <cv_bridge/cv_bridge.h>
+#include <ros/ros.h>
+#include <image_transport/image_transport.h>
+#include <sensor_msgs/CameraInfo.h>
+#include <sensor_msgs/image_encodings.h>
+#include <sensor_msgs/Image.h>
+#include <image_geometry/pinhole_camera_model.h>
+
 #include "volumetric_map_base/point_weighing.h"
 
 namespace volumetric_mapping {
@@ -93,6 +101,20 @@ class WorldBase {
   void insertPointcloud(
       const Transformation& T_G_sensor,
       const pcl::PointCloud<pcl::PointXYZ>::Ptr& pointcloud_sensor);
+
+  void insertPointcloud(
+      const Transformation& T_G_sensor,
+      const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& pointcloud_sensor);
+
+  void insertSaliencyImage(
+      const Transformation& T_G_sensor,
+      const sensor_msgs::ImageConstPtr& img);
+  void insertSaliencyImage(
+      const Transformation& T_G_sensor,
+      const cv_bridge::CvImagePtr& img);
+
+  void setCameraModel(image_geometry::PinholeCameraModel& camInfo);
+
 
   // Manually affect the state of a bounding box. For the WorldBase class,
   // setting to occupied is a no-op.
@@ -211,12 +233,28 @@ class WorldBase {
       const pcl::PointCloud<pcl::PointXYZ>::Ptr& pointcloud_sensor) {
     LOG(ERROR) << "Calling unimplemented pointcloud insertion!";
   }
+  virtual void insertPointcloudColorIntoMapImpl(
+      const Transformation& T_G_sensor,
+      const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& pointcloud_sensor) {
+    LOG(ERROR) << "Calling unimplemented pointcloud insertion!";
+  }
   virtual void insertPointcloudIntoMapWithWeightsImpl(
       const Transformation& sensor_to_world,
       const pcl::PointCloud<pcl::PointXYZ>::Ptr& pointcloud,
       const std::vector<double>& weights) {
     LOG(ERROR) << "Calling unimplemented disparity insertion!";
   }
+
+  virtual void insertSaliencyImageIntoMapImpl(
+      const Transformation& T_G_sensor,
+      const cv_bridge::CvImagePtr& img){
+    LOG(ERROR) << "Calling unimplemented insertSaliencyImageIntoMapImpl!";
+  }
+
+  virtual void setCameraModelImpl(image_geometry::PinholeCameraModel& camInfo){
+  LOG(ERROR) << "Calling unimplemented setCameraModelImpl!";
+  }
+
 
   // Generate Q matrix from parameters.
   Eigen::Matrix4d generateQ(double Tx, double left_cx, double left_cy,
