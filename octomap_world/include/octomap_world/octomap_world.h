@@ -46,9 +46,9 @@ namespace volumetric_mapping {
 
 struct SaliencyParameters{
   SaliencyParameters():
-    alpha(0.8),
-    beta(-0.0005),  //0.0005
-    saliency_threshold(200),
+    alpha(0.7),
+    beta(-0.0008),  //0.0005
+    saliency_threshold(125),
     timestamp(0),
     projection_limit(5.0),
     ground_limit(-10){
