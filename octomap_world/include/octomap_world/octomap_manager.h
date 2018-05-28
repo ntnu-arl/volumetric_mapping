@@ -27,6 +27,12 @@ ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
+/*
+* Modified by Tung Dang, University of Nevada, Reno.
+* The provided code is an implementation of the visual saliency-aware
+* exploration algorithm.
+*/
+
 #ifndef OCTOMAP_WORLD_OCTOMAP_MANAGER_H_
 #define OCTOMAP_WORLD_OCTOMAP_MANAGER_H_
 
