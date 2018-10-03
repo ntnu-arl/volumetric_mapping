@@ -34,7 +34,6 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
 #include <ctime>
-
 #include "octomap_world/octomap_world.h"
 
 #include <glog/logging.h>
@@ -47,10 +46,10 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 namespace volumetric_mapping {
 
 // Convenience functions for octomap point <-> eigen conversions.
-octomap::point3d pointEigenToOctomap(const Eigen::Vector3d& point) {
+octomap::point3d pointEigenToOctomap(const Eigen::Vector3d &point) {
   return octomap::point3d(point.x(), point.y(), point.z());
 }
-Eigen::Vector3d pointOctomapToEigen(const octomap::point3d& point) {
+Eigen::Vector3d pointOctomapToEigen(const octomap::point3d &point) {
   return Eigen::Vector3d(point.x(), point.y(), point.z());
 }
 
@@ -58,7 +57,7 @@ Eigen::Vector3d pointOctomapToEigen(const octomap::point3d& point) {
 OctomapWorld::OctomapWorld() : OctomapWorld(OctomapParameters()) {}
 
 // Creates an octomap with the correct parameters.
-OctomapWorld::OctomapWorld(const OctomapParameters& params)
+OctomapWorld::OctomapWorld(const OctomapParameters &params)
     : robot_size_(Eigen::Vector3d::Zero()) {
   setOctomapParameters(params);
 }
@@ -72,7 +71,7 @@ void OctomapWorld::resetMap() {
 
 void OctomapWorld::prune() { octree_->prune(); }
 
-void OctomapWorld::setOctomapParameters(const OctomapParameters& params) {
+void OctomapWorld::setOctomapParameters(const OctomapParameters &params) {
   if (octree_) {
     if (octree_->getResolution() != params.resolution) {
       LOG(WARNING) << "Octomap resolution has changed! Resetting tree!";
@@ -94,23 +93,21 @@ void OctomapWorld::setOctomapParameters(const OctomapParameters& params) {
   params_ = params;
 }
 
-
-void OctomapWorld::setCameraModelImpl(image_geometry::PinholeCameraModel& camInfo)
-{
+void OctomapWorld::setCameraModelImpl(
+    image_geometry::PinholeCameraModel &camInfo) {
   ROS_WARN("got camera model..");
   CamModel = camInfo;
   std::cout << CamModel.cameraInfo() << std::endl;
   std::cout << CamModel.fx() << "," << CamModel.fy() << std::endl;
 }
 
-void OctomapWorld::updateSaliency(octomap::SaliencyOcTreeNode * n, unsigned char sal_val)
-{
-  octomap::SaliencyOcTreeNode::Saliency& saliency = n->getSaliency();
-  if (saliency.type == octomap::SaliencyOcTreeNode::Saliency::VOXEL_NORMAL)
-  {
+void OctomapWorld::updateSaliency(octomap::SaliencyOcTreeNode *n,
+                                  unsigned char sal_val) {
+  octomap::SaliencyOcTreeNode::Saliency &saliency = n->getSaliency();
+  if (saliency.type == octomap::SaliencyOcTreeNode::Saliency::VOXEL_NORMAL) {
     float I_bar, I_bar_1, sal;
 
-    if(saliency.timestamp != salconfig_.timestamp) {
+    if (saliency.timestamp != salconfig_.timestamp) {
       // first hit in this time step: reset all value
       saliency.counter = 0;
       saliency.timestamp = salconfig_.timestamp;
@@ -119,60 +116,72 @@ void OctomapWorld::updateSaliency(octomap::SaliencyOcTreeNode * n, unsigned char
 
     I_bar_1 = saliency.value_buff;
     saliency.counter++;
-    I_bar = (I_bar_1 * (saliency.counter-1) + sal_val)/saliency.counter;
+    I_bar = (I_bar_1 * (saliency.counter - 1) + sal_val) / saliency.counter;
     sal = saliency.value + salconfig_.alpha * (I_bar - I_bar_1);
     saliency.value = (unsigned char)sal;
     saliency.value_buff = I_bar;
 
     unsigned char sal_thres = (unsigned char)salconfig_.saliency_threshold;
-    saliency.type = (saliency.value > sal_thres)?
-                     octomap::SaliencyOcTreeNode::Saliency::VOXEL_SALIENCY:
-                     octomap::SaliencyOcTreeNode::Saliency::VOXEL_NORMAL;
-    if (saliency.type == octomap::SaliencyOcTreeNode::Saliency::VOXEL_SALIENCY)
-    {
+    saliency.type = (saliency.value > sal_thres)
+                        ? octomap::SaliencyOcTreeNode::Saliency::VOXEL_SALIENCY
+                        : octomap::SaliencyOcTreeNode::Saliency::VOXEL_NORMAL;
+    if (saliency.type ==
+        octomap::SaliencyOcTreeNode::Saliency::VOXEL_SALIENCY) {
       saliency.counter = 0; // use this for IOR
     }
   }
 }
 
-void OctomapWorld::updateIOR(void)
-{
-  double exp_beta = 1 + salconfig_.beta + salconfig_.beta * salconfig_.beta / 2.0; // approximation of exponential function
+void OctomapWorld::updateIOR(void) {
+  double exp_beta = 1 + salconfig_.beta +
+                    salconfig_.beta * salconfig_.beta /
+                        2.0; // approximation of exponential function
   // scan the whole octomap
   for (octomap::SaliencyOcTree::leaf_iterator it = octree_->begin_leafs(),
-                          end = octree_->end_leafs(); it != end; ++it) {
+                                              end = octree_->end_leafs();
+       it != end; ++it) {
     if (octree_->isNodeOccupied(*it)) {
-      octomap::SaliencyOcTreeNode& node = *it;
-      octomap::SaliencyOcTreeNode::Saliency& saliency = node.getSaliency();
+      octomap::SaliencyOcTreeNode &node = *it;
+      octomap::SaliencyOcTreeNode::Saliency &saliency = node.getSaliency();
 
-      if ((saliency.type == octomap::SaliencyOcTreeNode::Saliency::VOXEL_SALIENCY) &&
-          (saliency.timestamp != salconfig_.timestamp)){ // time check: not decrease voxels that just updated
+      if ((saliency.type ==
+           octomap::SaliencyOcTreeNode::Saliency::VOXEL_SALIENCY) &&
+          (saliency.timestamp != salconfig_.timestamp)) { // time check: not
+                                                          // decrease voxels
+                                                          // that just updated
         saliency.counter++;
         double sal_tmp = (double)(saliency.value);
         double k = (double)saliency.counter;
-        exp_beta = 1 + k * salconfig_.beta + k * k * salconfig_.beta * salconfig_.beta / 2.0; // approximation of exponential function
+        exp_beta = 1 + k * salconfig_.beta +
+                   k * k * salconfig_.beta * salconfig_.beta /
+                       2.0; // approximation of exponential function
         sal_tmp *= exp_beta;
 
         unsigned char sal_thres = (unsigned char)salconfig_.saliency_threshold;
-        saliency.type = (sal_tmp > sal_thres)?
-                          octomap::SaliencyOcTreeNode::Saliency::VOXEL_SALIENCY:
-                          octomap::SaliencyOcTreeNode::Saliency::VOXEL_RETIRED;
+        saliency.type =
+            (sal_tmp > sal_thres)
+                ? octomap::SaliencyOcTreeNode::Saliency::VOXEL_SALIENCY
+                : octomap::SaliencyOcTreeNode::Saliency::VOXEL_RETIRED;
         saliency.timestamp = salconfig_.timestamp;
       }
-    }else{
+    } else {
       // free voxels
-      octomap::SaliencyOcTreeNode& node = *it;
-      octomap::SaliencyOcTreeNode::Saliency& saliency = node.getSaliency();
+      octomap::SaliencyOcTreeNode &node = *it;
+      octomap::SaliencyOcTreeNode::Saliency &saliency = node.getSaliency();
       saliency.value = 0;
     }
   }
 }
 
+Eigen::Matrix4d OctomapWorld::getCameraPose(void) {
+  Eigen::Matrix4d mat = camerapose_.getTransformationMatrix();
+  return mat;
+}
+
 void OctomapWorld::insertSaliencyImageIntoMapImpl(
-    const Transformation& T_G_sensor,
-    const cv_bridge::CvImagePtr& img){
+    const Transformation &T_G_sensor, const cv_bridge::CvImagePtr &img) {
   salconfig_.timestamp++;
-  //return; // uncomment if want to come back to projection solution
+  // return; // uncomment if want to come back to projection solution
 
   clock_t begin_time = clock();
 
@@ -189,35 +198,38 @@ void OctomapWorld::insertSaliencyImageIntoMapImpl(
 
   // TUNG PROJECTION
   unsigned char sal_thres = (unsigned char)salconfig_.saliency_threshold;
-  octomap::point3d direction = octomap::point3d (0,0.0,0.0);
-  octomap::point3d obstacle(0,0,0);
+  octomap::point3d direction = octomap::point3d(0, 0.0, 0.0);
+  octomap::point3d obstacle(0, 0, 0);
 
   cv::Mat &mat = img->image;
   int width = mat.cols;
   int height = mat.rows;
   int count_success = 0;
   int count_total = 0;
-  for (int i=0; i < width; i+=5) {
-    for (int j=0; j < height; j+=5) {
-      if (mat.at<unsigned char>(j, i) < sal_thres) continue;
+  for (int i = 0; i < width; i += 5) {
+    for (int j = 0; j < height; j += 5) {
+      if (mat.at<unsigned char>(j, i) < sal_thres)
+        continue;
 
       count_total++;
       cv::Point3d p;
       cv::Point2d uv_rect;
       uv_rect.x = i;
       uv_rect.y = j;
-      p = CamModel.projectPixelTo3dRay(	uv_rect ) ;
+      p = CamModel.projectPixelTo3dRay(uv_rect);
 
       // transform to world coordinate
       // First, rotate the pointcloud into the world frame.
-      pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>());
+      pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(
+          new pcl::PointCloud<pcl::PointXYZ>());
       pcl::PointXYZ pnt, pntTf;
       pnt.x = p.x;
       pnt.y = p.y;
       pnt.z = p.z;
       cloud->clear();
       cloud->push_back(pnt);
-      pcl::transformPointCloud(*cloud, *cloud, T_G_sensor.getTransformationMatrix());
+      pcl::transformPointCloud(*cloud, *cloud,
+                               T_G_sensor.getTransformationMatrix());
       pntTf.x = cloud->points[0].x;
       pntTf.y = cloud->points[0].y;
       pntTf.z = cloud->points[0].z;
@@ -227,11 +239,15 @@ void OctomapWorld::insertSaliencyImageIntoMapImpl(
       direction.y() = pntTf.y - origin.y();
       direction.z() = pntTf.z - origin.z();
 
-      if (octree_->castRay(origin, direction, obstacle, false, salconfig_.projection_limit)) // stop when meet uknown cell or reach a limit
+      if (octree_->castRay(origin, direction, obstacle, false,
+                           salconfig_.projection_limit)) // stop when meet
+                                                         // uknown cell or reach
+                                                         // a limit
       {
-        if ((obstacle.z() > z_ground)) // && (obstacle.x() > 0) && (obstacle.x() < 4.0)) {
+        if ((obstacle.z() >
+             z_ground)) // && (obstacle.x() > 0) && (obstacle.x() < 4.0)) {
         {
-          octomap::SaliencyOcTreeNode* n = octree_->search(obstacle);
+          octomap::SaliencyOcTreeNode *n = octree_->search(obstacle);
           if (octree_->isNodeOccupied(n)) {
             updateSaliency(n, mat.at<unsigned char>(j, i)); //
             count_success++;
@@ -249,22 +265,25 @@ void OctomapWorld::insertSaliencyImageIntoMapImpl(
 
   clock_t end_time = clock();
   double elapsed_secs = double(end_time - begin_time) / CLOCKS_PER_SEC;
-  //std::cout << "[" << salconfig_.timestamp << "] Projected " << count_total << " points with " << count_success << " successful points in (s): " << elapsed_secs << std::endl;
+  // std::cout << "[" << salconfig_.timestamp << "] Projected " << count_total
+  // << " points with " << count_success << " successful points in (s): " <<
+  // elapsed_secs << std::endl;
 
-  if (salconfig_.beta < 0){
+  if (salconfig_.beta < 0) {
     begin_time = clock();
     updateIOR();
     end_time = clock();
     elapsed_secs = double(end_time - begin_time) / CLOCKS_PER_SEC;
-    //std::cout <<  "[" << salconfig_.timestamp << "] IOR (s) " << elapsed_secs << std::endl;
+    // std::cout <<  "[" << salconfig_.timestamp << "] IOR (s) " << elapsed_secs
+    // << std::endl;
   }
 }
 
-void OctomapWorld::generateProjectionMarker( const std::string& tf_frame,
-    visualization_msgs::Marker* line_list)
-{
+void OctomapWorld::generateProjectionMarker(
+    const std::string &tf_frame, visualization_msgs::Marker *line_list) {
   static int id = 0;
-  if (ProjCloud.size() == 0) return;
+  if (ProjCloud.size() == 0)
+    return;
 
   line_list->header.frame_id = tf_frame;
   line_list->header.stamp = ros::Time::now();
@@ -287,8 +306,7 @@ void OctomapWorld::generateProjectionMarker( const std::string& tf_frame,
 
   int count = ProjCloud.size();
 
-  for (int i = 1; i < count; i++)
-  {
+  for (int i = 1; i < count; i++) {
     p2.x = ProjCloud.points[i].x;
     p2.y = ProjCloud.points[i].y;
     p2.z = ProjCloud.points[i].z;
@@ -299,10 +317,9 @@ void OctomapWorld::generateProjectionMarker( const std::string& tf_frame,
   line_list->points.push_back(p1);
 }
 
-
 void OctomapWorld::insertPointcloudColorIntoMapImpl(
-    const Transformation& T_G_sensor,
-    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud) {
+    const Transformation &T_G_sensor,
+    const pcl::PointCloud<pcl::PointXYZRGB>::Ptr &cloud) {
   // Remove NaN values, if any.
   std::vector<int> indices;
   pcl::removeNaNFromPointCloud(*cloud, *cloud, indices);
@@ -336,34 +353,38 @@ void OctomapWorld::insertPointcloudColorIntoMapImpl(
 
   int free_voxels = 0, occupied_voxels = 0;
   for (octomap::SaliencyOcTree::leaf_iterator it = octree_->begin_leafs(),
-                                      end = octree_->end_leafs();
+                                              end = octree_->end_leafs();
        it != end; ++it) {
     double ix = it.getX(), iy = it.getY(), iz = it.getZ();
-    if ((ix <= maxx_) && (ix >= minx_) &&
-        (iy <= maxy_) && (iy >= miny_) &&
-        (iz <= maxz_) && (iz >= minz_)){
-      if (octree_->isNodeOccupied(*it)) occupied_voxels++;
-      else free_voxels++;
+    if ((ix <= maxx_) && (ix >= minx_) && (iy <= maxy_) && (iy >= miny_) &&
+        (iz <= maxz_) && (iz >= minz_)) {
+      if (octree_->isNodeOccupied(*it))
+        occupied_voxels++;
+      else
+        free_voxels++;
     }
   }
 
-  double res  = octree_->getResolution();
+  double res = octree_->getResolution();
   double total_voxels = 0;
   if (res)
-    total_voxels = (maxx_ - minx_) * (maxy_ - miny_) * (maxz_ - minz_) / (res*res*res);
+    total_voxels =
+        (maxx_ - minx_) * (maxy_ - miny_) * (maxz_ - minz_) / (res * res * res);
 
-  if (total_voxels){
-    exp_percent_ = ((float)free_voxels+(float)occupied_voxels)/total_voxels;
+  if (total_voxels) {
+    exp_percent_ = ((float)free_voxels + (float)occupied_voxels) / total_voxels;
     std::cout << "DEBUG:" << exp_percent_ << "\n";
   }
 }
 
 void OctomapWorld::insertPointcloudIntoMapImpl(
-    const Transformation& T_G_sensor,
-    const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud) {
+    const Transformation &T_G_sensor,
+    const pcl::PointCloud<pcl::PointXYZ>::Ptr &cloud) {
   // Remove NaN values, if any.
   std::vector<int> indices;
   pcl::removeNaNFromPointCloud(*cloud, *cloud, indices);
+
+  camerapose_ = T_G_sensor;
 
   // First, rotate the pointcloud into the world frame.
   pcl::transformPointCloud(*cloud, *cloud,
@@ -394,31 +415,32 @@ void OctomapWorld::insertPointcloudIntoMapImpl(
 
   int free_voxels = 0, occupied_voxels = 0;
   for (octomap::SaliencyOcTree::leaf_iterator it = octree_->begin_leafs(),
-                                      end = octree_->end_leafs();
+                                              end = octree_->end_leafs();
        it != end; ++it) {
     double ix = it.getX(), iy = it.getY(), iz = it.getZ();
-    if ((ix <= maxx_) && (ix >= minx_) &&
-        (iy <= maxy_) && (iy >= miny_) &&
-        (iz <= maxz_) && (iz >= minz_)){
-      if (octree_->isNodeOccupied(*it)) occupied_voxels++;
-      else free_voxels++;
+    if ((ix <= maxx_) && (ix >= minx_) && (iy <= maxy_) && (iy >= miny_) &&
+        (iz <= maxz_) && (iz >= minz_)) {
+      if (octree_->isNodeOccupied(*it))
+        occupied_voxels++;
+      else
+        free_voxels++;
     }
   }
 
-  double res  = octree_->getResolution();
+  double res = octree_->getResolution();
   double total_voxels = 0;
   if (res)
-    total_voxels = (maxx_ - minx_) * (maxy_ - miny_) * (maxz_ - minz_) / (res*res*res);
+    total_voxels =
+        (maxx_ - minx_) * (maxy_ - miny_) * (maxz_ - minz_) / (res * res * res);
 
-  if (total_voxels){
-    exp_percent_ = ((float)free_voxels+(float)occupied_voxels)/total_voxels;
-    //std::cout << "DEBUG:" << exp_percent_ << "\n";
+  if (total_voxels) {
+    exp_percent_ = ((float)free_voxels + (float)occupied_voxels) / total_voxels;
+    // std::cout << "DEBUG:" << exp_percent_ << "\n";
   }
-
 }
 
 void OctomapWorld::insertProjectedDisparityIntoMapImpl(
-    const Transformation& sensor_to_world, const cv::Mat& projected_points) {
+    const Transformation &sensor_to_world, const cv::Mat &projected_points) {
   // Get the sensor origin in the world frame.
   Eigen::Vector3d sensor_origin_eigen = Eigen::Vector3d::Zero();
   sensor_origin_eigen = sensor_to_world * sensor_origin_eigen;
@@ -426,7 +448,7 @@ void OctomapWorld::insertProjectedDisparityIntoMapImpl(
 
   octomap::KeySet free_cells, occupied_cells;
   for (int v = 0; v < projected_points.rows; ++v) {
-    const cv::Vec3f* row_pointer = projected_points.ptr<cv::Vec3f>(v);
+    const cv::Vec3f *row_pointer = projected_points.ptr<cv::Vec3f>(v);
 
     for (int u = 0; u < projected_points.cols; ++u) {
       // Check whether we're within the correct range for disparity.
@@ -451,10 +473,10 @@ void OctomapWorld::insertProjectedDisparityIntoMapImpl(
   updateOccupancy(&free_cells, &occupied_cells);
 }
 
-int OctomapWorld::castRay(const octomap::point3d& sensor_origin,
-                           const octomap::point3d& point,
-                           octomap::KeySet* free_cells,
-                           octomap::KeySet* occupied_cells) const {
+int OctomapWorld::castRay(const octomap::point3d &sensor_origin,
+                          const octomap::point3d &point,
+                          octomap::KeySet *free_cells,
+                          octomap::KeySet *occupied_cells) const {
   CHECK_NOTNULL(free_cells);
   CHECK_NOTNULL(occupied_cells);
 
@@ -468,10 +490,12 @@ int OctomapWorld::castRay(const octomap::point3d& sensor_origin,
       if (params_.max_free_space == 0.0) {
         free_cells->insert(key_ray.begin(), key_ray.end());
       } else {
-        for (const auto& key: key_ray) {
+        for (const auto &key : key_ray) {
           octomap::point3d voxel_coordinate = octree_->keyToCoord(key);
-          if ((voxel_coordinate - sensor_origin).norm() < params_.max_free_space ||
-              voxel_coordinate.z() > (sensor_origin.z() - params_.min_height_free_space)) {
+          if ((voxel_coordinate - sensor_origin).norm() <
+                  params_.max_free_space ||
+              voxel_coordinate.z() >
+                  (sensor_origin.z() - params_.min_height_free_space)) {
             free_cells->insert(key);
           }
         }
@@ -493,10 +517,12 @@ int OctomapWorld::castRay(const octomap::point3d& sensor_origin,
       if (params_.max_free_space == 0.0) {
         free_cells->insert(key_ray.begin(), key_ray.end());
       } else {
-        for (const auto& key: key_ray) {
+        for (const auto &key : key_ray) {
           octomap::point3d voxel_coordinate = octree_->keyToCoord(key);
-          if ((voxel_coordinate - sensor_origin).norm() < params_.max_free_space ||
-              voxel_coordinate.z() > (sensor_origin.z() - params_.min_height_free_space)) {
+          if ((voxel_coordinate - sensor_origin).norm() <
+                  params_.max_free_space ||
+              voxel_coordinate.z() >
+                  (sensor_origin.z() - params_.min_height_free_space)) {
             free_cells->insert(key);
           }
         }
@@ -507,15 +533,14 @@ int OctomapWorld::castRay(const octomap::point3d& sensor_origin,
   return res;
 }
 
-
-bool OctomapWorld::isValidPoint(const cv::Vec3f& point) const {
+bool OctomapWorld::isValidPoint(const cv::Vec3f &point) const {
   // Check both for disparities explicitly marked as invalid (where OpenCV maps
   // pt.z to MISSING_Z) and zero disparities (point mapped to infinity).
   return point[2] != 10000.0f && !std::isinf(point[2]);
 }
 
-void OctomapWorld::updateOccupancy(octomap::KeySet* free_cells,
-                                   octomap::KeySet* occupied_cells) {
+void OctomapWorld::updateOccupancy(octomap::KeySet *free_cells,
+                                   octomap::KeySet *occupied_cells) {
   CHECK_NOTNULL(free_cells);
   CHECK_NOTNULL(occupied_cells);
 
@@ -543,8 +568,8 @@ void OctomapWorld::updateOccupancy(octomap::KeySet* free_cells,
 }
 
 OctomapWorld::CellStatus OctomapWorld::getCellStatusBoundingBox(
-    const Eigen::Vector3d& point,
-    const Eigen::Vector3d& bounding_box_size) const {
+    const Eigen::Vector3d &point,
+    const Eigen::Vector3d &bounding_box_size) const {
   // First case: center point is unknown or occupied. Can just quit.
   CellStatus center_status = getCellStatusPoint(point);
   if (center_status != CellStatus::kFree && params_.treat_unknown_as_occupied) {
@@ -591,9 +616,9 @@ OctomapWorld::CellStatus OctomapWorld::getCellStatusBoundingBox(
   return CellStatus::kFree;
 }
 
-OctomapWorld::CellStatus OctomapWorld::getCellStatusPoint(
-    const Eigen::Vector3d& point) const {
-  octomap::OcTreeNode* node = octree_->search(point.x(), point.y(), point.z());
+OctomapWorld::CellStatus
+OctomapWorld::getCellStatusPoint(const Eigen::Vector3d &point) const {
+  octomap::OcTreeNode *node = octree_->search(point.x(), point.y(), point.z());
   if (node == NULL) {
     return CellStatus::kUnknown;
   } else if (octree_->isNodeOccupied(node)) {
@@ -603,9 +628,10 @@ OctomapWorld::CellStatus OctomapWorld::getCellStatusPoint(
   }
 }
 
-OctomapWorld::CellStatus OctomapWorld::getCellProbabilityPoint(
-    const Eigen::Vector3d& point, double* probability) const {
-  octomap::OcTreeNode* node = octree_->search(point.x(), point.y(), point.z());
+OctomapWorld::CellStatus
+OctomapWorld::getCellProbabilityPoint(const Eigen::Vector3d &point,
+                                      double *probability) const {
+  octomap::OcTreeNode *node = octree_->search(point.x(), point.y(), point.z());
   if (node == NULL) {
     if (probability) {
       *probability = -1.0;
@@ -623,16 +649,18 @@ OctomapWorld::CellStatus OctomapWorld::getCellProbabilityPoint(
   }
 }
 
-OctomapWorld::CellStatus OctomapWorld::getCuriousGain(
-    const Eigen::Vector3d& point, double* gain) const {
-  octomap::SaliencyOcTreeNode* node = octree_->search(point.x(), point.y(), point.z());
+OctomapWorld::CellStatus
+OctomapWorld::getCuriousGain(const Eigen::Vector3d &point, double *gain) const {
+  octomap::SaliencyOcTreeNode *node =
+      octree_->search(point.x(), point.y(), point.z());
   *gain = 0;
   if (node == NULL) {
     return CellStatus::kUnknown;
   } else {
     if (octree_->isNodeOccupied(node)) {
-      octomap::SaliencyOcTreeNode::Saliency& saliency = node->getSaliency();
-      if (saliency.type == octomap::SaliencyOcTreeNode::Saliency::VOXEL_SALIENCY)
+      octomap::SaliencyOcTreeNode::Saliency &saliency = node->getSaliency();
+      if (saliency.type ==
+          octomap::SaliencyOcTreeNode::Saliency::VOXEL_SALIENCY)
         *gain = saliency.value;
       return CellStatus::kOccupied;
     } else {
@@ -641,23 +669,292 @@ OctomapWorld::CellStatus OctomapWorld::getCuriousGain(
   }
 }
 
-void OctomapWorld::setVoxelToEval(const Eigen::Vector3d& origin, const Eigen::Vector3d& point, float z)  {
-  octomap::SaliencyOcTreeNode* node = octree_->search(point.x(), point.y(), point.z());
+OctomapWorld::CellStatus
+OctomapWorld::getEstEntropy(const Eigen::Vector3d &origin,
+                            const Eigen::Vector3d &point, float z,
+                            double *gain) {
+
+  octomap::SaliencyOcTreeNode *node =
+      octree_->search(point.x(), point.y(), point.z());
+
+  *gain = 0;
+  if (node == NULL)
+    return CellStatus::kUnknown;
+
+  if (octree_->isNodeOccupied(node)) {
+    if (getVisibility(origin, point, false) == CellStatus::kFree) {
+      octomap::SaliencyOcTreeNode::Saliency &Saliency = node->getSaliency();
+      if (Saliency.type ==
+          octomap::SaliencyOcTreeNode::Saliency::VOXEL_SALIENCY) {
+        Eigen::Vector3d dist_vec(0, 0, 0);
+        dist_vec = origin - point;
+        float yaw_angle =
+            atan2(dist_vec[1], dist_vec[0]) * 57.2957795; // rad to deg
+
+        if ((salconfig_.r_bins != 0) || (salconfig_.yaw_bins != 0)) {
+          // Compute the bin
+          float dr = (salconfig_.r_ub - salconfig_.r_lb) / (salconfig_.r_bins);
+          float dyaw =
+              (salconfig_.yaw_ub - salconfig_.yaw_lb) / (salconfig_.yaw_bins);
+
+          // Check the limit: check again whether we care about the data points
+          // outside the bound
+          if (z > salconfig_.r_ub)
+            z = salconfig_.r_ub;
+          else if (z < salconfig_.r_lb)
+            z = salconfig_.r_lb;
+
+          int rind = (int)((z - salconfig_.r_lb) / dr);
+          int yawind = (int)((yaw_angle - salconfig_.yaw_lb) / dyaw);
+          // Saliency.hist[rind][yawind] += 1;
+          if ((rind < salconfig_.r_bins) && (yawind < salconfig_.yaw_bins))
+            *gain = getPotentialEntropy(Saliency, rind, yawind);
+        }
+      }
+    }
+    return CellStatus::kOccupied;
+  } else {
+    return CellStatus::kFree;
+  }
+}
+
+float OctomapWorld::getDiffEntropyFromPath(
+    const std::vector<Eigen::Vector3d> &origins, const Eigen::Vector3d &point) {
+
+  octomap::SaliencyOcTreeNode *node =
+      octree_->search(point.x(), point.y(), point.z());
+  if ((node == NULL) || (!octree_->isNodeOccupied(node)))
+    return 0;
+
+  octomap::SaliencyOcTreeNode::Saliency &Saliency = node->getSaliency();
+  if (Saliency.type != octomap::SaliencyOcTreeNode::Saliency::VOXEL_SALIENCY)
+    return 0;
+
+  int n = origins.size();
+  // for (int i = 0; i < n; i++){
+  //   std::cout << origins[i].x() << "," << origins[i].y() << "," <<
+  //   origins[i].z() << std::endl;
+  // }
+  float gain = 0;
+
+  float entropy_current = getEntropy(Saliency);
+
+  // std::cout << "@@@ Hist bins:" << salconfig_.r_bins << "," <<
+  // salconfig_.yaw_bins << std::endl;
+  uint8_t **hist = new uint8_t *[salconfig_.r_bins];
+  for (int i = 0; i < salconfig_.r_bins; ++i)
+    hist[i] = new uint8_t[salconfig_.yaw_bins];
+
+  for (int i = 0; i < salconfig_.r_bins; i++)
+    for (int j = 0; j < salconfig_.yaw_bins;
+         hist[i][j] = Saliency.hist[i][j], j++)
+      // TODO: tung, bug memory here
+      // std::copy(Saliency.hist,
+      // Saliency.hist+salconfig_.r_bins*salconfig_.yaw_bins, hist);
+      // std::cout << "@@ Size n:" << n << std::endl;
+
+      for (int i = 0; i < n; i++) {
+        // std::cout << "@" << i << std::endl;
+        Eigen::Vector3d origin(0, 0, 0);
+        origin.x() = origins[i].x();
+        origin.y() = origins[i].y();
+        origin.z() = origins[i].z();
+        Eigen::Vector3d voxel_to_test(0, 0, 0);
+        voxel_to_test.x() = point.x();
+        voxel_to_test.y() = point.y();
+        voxel_to_test.z() = point.z();
+        // ROS_INFO("Origin %f %f %f, %f %f %f", origin.x(), origin.y(),
+        // origin.z(), voxel_to_test.x(), voxel_to_test.y(), voxel_to_test.z());
+        if (getVisibility(origin, point, false) == CellStatus::kFree) {
+          Eigen::Vector3d dist_vec(0, 0, 0);
+          dist_vec = origin - point;
+          if ((salconfig_.r_bins != 0) || (salconfig_.yaw_bins != 0)) {
+            // Compute the bin
+            float yaw_angle = atan2(dist_vec[1], dist_vec[0]) * 57.2957795;
+            float dr =
+                (salconfig_.r_ub - salconfig_.r_lb) / (salconfig_.r_bins);
+            float dyaw =
+                (salconfig_.yaw_ub - salconfig_.yaw_lb) / (salconfig_.yaw_bins);
+
+            // Check the limit: check again whether we care about the data
+            // points outside the bound
+            float z = dist_vec.norm();
+            if (z > salconfig_.r_ub)
+              z = salconfig_.r_ub;
+            else if (z < salconfig_.r_lb)
+              z = salconfig_.r_lb;
+
+            int rind = (int)((z - salconfig_.r_lb) / dr);
+            int yawind = (int)((yaw_angle - salconfig_.yaw_lb) / dyaw);
+
+            // TODO: check this reasoning again, how can we deal with
+            // measurements outside the hist bin
+            if ((rind < salconfig_.r_bins) && (yawind < salconfig_.yaw_bins))
+              hist[rind][yawind]++;
+            // else
+            // std::cout << "MF: " << salconfig_.r_bins << "," <<
+            // salconfig_.yaw_bins << std::endl;
+          }
+        }
+      }
+
+  float entropy_potential = 0;
+  float total_count = 0;
+  for (int i = 0; i < salconfig_.r_bins; i++)
+    for (int j = 0; j < salconfig_.yaw_bins; total_count += hist[i][j], j++)
+      ;
+
+  if (total_count) {
+    for (int i = 0; i < salconfig_.r_bins; i++) {
+      for (int j = 0; j < salconfig_.yaw_bins; j++) {
+        float p = (float)(hist[i][j]) / total_count;
+        if ((p != 0) && (p != 1))
+          entropy_potential += -p * log(p);
+      }
+    }
+    double d_entropy = entropy_potential - entropy_current;
+    if (d_entropy < 0) // reobserve voxels observed before, can set a small gain
+                       // for this to allow this; otherwise, it tries to avoid
+                       // this direction
+      d_entropy = 0.01;
+    return d_entropy;
+  }
+  return 0;
+}
+
+void OctomapWorld::setVoxelToEval(const Eigen::Vector3d &origin,
+                                  const Eigen::Vector3d &point, float z) {
+  octomap::SaliencyOcTreeNode *node =
+      octree_->search(point.x(), point.y(), point.z());
   if (node != NULL) {
     if (octree_->isNodeOccupied(node)) {
       if (getVisibility(origin, point, false) == CellStatus::kFree) {
-          octomap::SaliencyOcTreeNode::Saliency& saliency = node->getSaliency();
-          saliency.viewpoint++;
-          float dens = getPixelOverArea(z);
-          saliency.density += (uint32_t)(dens);
+        octomap::SaliencyOcTreeNode::Saliency &Saliency = node->getSaliency();
+
+        Eigen::Vector3d dist_vec(0, 0, 0);
+        dist_vec = origin - point;
+        float yaw_angle = atan2(dist_vec[1], dist_vec[0]) * 57.2957795;
+
+        // Get the size of the histogram buffer
+        if ((salconfig_.r_bins == 0) || (salconfig_.yaw_bins == 0)) {
+          int bins[2];
+          node->getHistBins(bins);
+          if ((bins[0]) && (bins[1])) {
+            salconfig_.r_bins = bins[0];
+            salconfig_.yaw_bins = bins[1];
+          }
+        }
+
+        if ((salconfig_.r_bins != 0) && (salconfig_.yaw_bins != 0)) {
+          // Compute the bin
+          float dr = (salconfig_.r_ub - salconfig_.r_lb) / (salconfig_.r_bins);
+          float dyaw =
+              (salconfig_.yaw_ub - salconfig_.yaw_lb) / (salconfig_.yaw_bins);
+
+          // Check the limit: check again whether we care about the data points
+          // outside the bound
+          if (z > salconfig_.r_ub)
+            z = salconfig_.r_ub;
+          else if (z < salconfig_.r_lb)
+            z = salconfig_.r_lb;
+
+          int rind = (int)((z - salconfig_.r_lb) / dr);
+          int yawind = (int)((yaw_angle - salconfig_.yaw_lb) / dyaw);
+
+          if ((rind < salconfig_.r_bins) && (yawind < salconfig_.yaw_bins))
+            Saliency.hist[rind][yawind] += 1;
+
+          // if ((Saliency.type ==
+          // octomap::SaliencyOcTreeNode::Saliency::VOXEL_SALIENCY) &&
+          // 	  (Saliency.density > dens_thres))
+          //   Saliency.type =
+          //   octomap::SaliencyOcTreeNode::Saliency::VOXEL_RETIRED;
+        }
       }
     }
   }
 }
 
+/* Original saliency
+void OctomapWorld::setVoxelToEval1(const Eigen::Vector3d &origin,
+                                   const Eigen::Vector3d &point, float z) {
+  octomap::SaliencyOcTreeNode *node =
+      octree_->search(point.x(), point.y(), point.z());
+  if (node != NULL) {
+    if (octree_->isNodeOccupied(node)) {
+      if (getVisibility(origin, point, false) == CellStatus::kFree) {
+        octomap::SaliencyOcTreeNode::Saliency &saliency = node->getSaliency();
+        saliency.viewpoint++;
+        float dens = getPixelOverArea(z);
+        saliency.density += (uint32_t)(dens);
+      }
+    }
+  }
+}
+*/
+
+float OctomapWorld::getEntropy(
+    octomap::SaliencyOcTreeNode::Saliency &Saliency) {
+  // Compute the ENTROPY from the histogram of the voxel
+  float entropy = 0;
+  float total_count = 0;
+  for (int i = 0; i < salconfig_.r_bins; i++)
+    for (int j = 0; j < salconfig_.yaw_bins;
+         total_count += Saliency.hist[i][j], j++)
+      ;
+
+  if (total_count) {
+    for (int i = 0; i < salconfig_.r_bins; i++)
+      for (int j = 0; j < salconfig_.yaw_bins; j++) {
+        float p = (float)(Saliency.hist[i][j]) / total_count;
+        if ((p != 0) && (p != 1))
+          entropy += -p * log(p);
+      }
+  }
+  return entropy;
+}
+
+float OctomapWorld::getPotentialEntropy(
+    octomap::SaliencyOcTreeNode::Saliency &Saliency, int r_ind, int yaw_ind) {
+  float entropy = 0;
+  int total_count = 0;
+
+  for (int i = 0; i < salconfig_.r_bins; i++)
+    for (int j = 0; j < salconfig_.yaw_bins; j++) {
+      total_count += (int)Saliency.hist[i][j];
+    }
+
+  total_count++; // one more from this viewpoint
+  for (int i = 0; i < salconfig_.r_bins; i++)
+    for (int j = 0; j < salconfig_.yaw_bins; j++) {
+      float p;
+      if ((i == r_ind) && (j == yaw_ind))
+        p = (float)(Saliency.hist[i][j] + 1) / (float)total_count;
+      else
+        p = (float)(Saliency.hist[i][j]) / (float)total_count;
+      if ((p != 0) && (p != 1))
+        entropy += -p * log(p);
+    }
+  ROS_INFO("Total count: %d; Entropy: %f", total_count, entropy);
+  return entropy;
+}
+
+bool OctomapWorld::isAbnormalVoxel(const Eigen::Vector3d &point) {
+  octomap::SaliencyOcTreeNode *node =
+      octree_->search(point.x(), point.y(), point.z());
+  if ((node != NULL) && (octree_->isNodeOccupied(node))) {
+    octomap::SaliencyOcTreeNode::Saliency &Saliency = node->getSaliency();
+    if (Saliency.type ==
+        octomap::SaliencyOcTreeNode::Saliency::VOXEL_SALIENCY) {
+      return true;
+    }
+  }
+  return false;
+}
+
 bool OctomapWorld::getExplorationRate(double *e) {
 
-  if (start_timing_){
+  if (start_timing_) {
     time_last_ = ros::Time::now();
     start_timing_ = false;
   }
@@ -682,29 +979,30 @@ bool OctomapWorld::getExplorationRate(double *e) {
 }
 
 double OctomapWorld::getVolumePercentage(double v) {
-  double res  = octree_->getResolution();
+  double res = octree_->getResolution();
   double total_voxels = 0;
-  if (res){
-    total_voxels = (maxx_ - minx_) * (maxy_ - miny_) * (maxz_ - minz_) / (res*res*res);
-    return (v/total_voxels);
-  }else{
-    return -1.0; //undefined
+  if (res) {
+    total_voxels =
+        (maxx_ - minx_) * (maxy_ - miny_) * (maxz_ - minz_) / (res * res * res);
+    return (v / total_voxels);
+  } else {
+    return -1.0; // undefined
   }
 }
 
-
 float OctomapWorld::getPixelOverArea(float z) {
   float fx = CamModel.fx(), fy = CamModel.fy();
-  return (fx*fy)/(z * z); // number of pixels in a voxel
+  return (fx * fy) / (z * z); // number of pixels in a voxel
 }
 
 float OctomapWorld::getAreaOverPixel(float z) {
   float fx = CamModel.fx(), fy = CamModel.fy();
-  return (z*z)/(fx * fy); // area over 1 pixe
+  return (z * z) / (fx * fy); // area over 1 pixe
 }
 
-OctomapWorld::CellStatus OctomapWorld::getLineStatus(
-    const Eigen::Vector3d& start, const Eigen::Vector3d& end) const {
+OctomapWorld::CellStatus
+OctomapWorld::getLineStatus(const Eigen::Vector3d &start,
+                            const Eigen::Vector3d &end) const {
   // Get all node keys for this line.
   // This is actually a typedef for a vector of OcTreeKeys.
   octomap::KeyRay key_ray;
@@ -714,7 +1012,7 @@ OctomapWorld::CellStatus OctomapWorld::getLineStatus(
 
   // Now check if there are any unknown or occupied nodes in the ray.
   for (octomap::OcTreeKey key : key_ray) {
-    octomap::OcTreeNode* node = octree_->search(key);
+    octomap::OcTreeNode *node = octree_->search(key);
     if (node == NULL) {
       return CellStatus::kUnknown;
     } else if (octree_->isNodeOccupied(node)) {
@@ -724,9 +1022,10 @@ OctomapWorld::CellStatus OctomapWorld::getLineStatus(
   return CellStatus::kFree;
 }
 
-OctomapWorld::CellStatus OctomapWorld::getVisibility(
-    const Eigen::Vector3d& view_point, const Eigen::Vector3d& voxel_to_test,
-    bool stop_at_unknown_cell) const {
+OctomapWorld::CellStatus
+OctomapWorld::getVisibility(const Eigen::Vector3d &view_point,
+                            const Eigen::Vector3d &voxel_to_test,
+                            bool stop_at_unknown_cell) const {
   // Get all node keys for this line.
   // This is actually a typedef for a vector of OcTreeKeys.
   octomap::KeyRay key_ray;
@@ -734,14 +1033,14 @@ OctomapWorld::CellStatus OctomapWorld::getVisibility(
   octree_->computeRayKeys(pointEigenToOctomap(view_point),
                           pointEigenToOctomap(voxel_to_test), key_ray);
 
-  const octomap::OcTreeKey& voxel_to_test_key =
+  const octomap::OcTreeKey &voxel_to_test_key =
       octree_->coordToKey(pointEigenToOctomap(voxel_to_test));
 
   // Now check if there are any unknown or occupied nodes in the ray,
   // except for the voxel_to_test key.
   for (octomap::OcTreeKey key : key_ray) {
     if (key != voxel_to_test_key) {
-      octomap::OcTreeNode* node = octree_->search(key);
+      octomap::OcTreeNode *node = octree_->search(key);
       if (node == NULL) {
         if (stop_at_unknown_cell) {
           return CellStatus::kUnknown;
@@ -755,14 +1054,14 @@ OctomapWorld::CellStatus OctomapWorld::getVisibility(
 }
 
 OctomapWorld::CellStatus OctomapWorld::getLineStatusBoundingBox(
-    const Eigen::Vector3d& start, const Eigen::Vector3d& end,
-    const Eigen::Vector3d& bounding_box_size) const {
+    const Eigen::Vector3d &start, const Eigen::Vector3d &end,
+    const Eigen::Vector3d &bounding_box_size) const {
   // TODO(helenol): Probably best way would be to get all the coordinates along
   // the line, then make a set of all the OcTreeKeys in all the bounding boxes
   // around the nodes... and then just go through and query once.
-  const double epsilon = 0.001;  // Small offset
+  const double epsilon = 0.001; // Small offset
   CellStatus ret = CellStatus::kFree;
-  const double& resolution = getResolution();
+  const double &resolution = getResolution();
 
   // Check corner connections and depending on resolution also interior:
   // Discretization step is smaller than the octomap resolution, as this way
@@ -775,9 +1074,12 @@ OctomapWorld::CellStatus OctomapWorld::getLineStatusBoundingBox(
                   ceil((bounding_box_size.z() + epsilon) / resolution);
 
   // Ensure that resolution is not infinit
-  if (x_disc <= 0.0) x_disc = 1.0;
-  if (y_disc <= 0.0) y_disc = 1.0;
-  if (z_disc <= 0.0) z_disc = 1.0;
+  if (x_disc <= 0.0)
+    x_disc = 1.0;
+  if (y_disc <= 0.0)
+    y_disc = 1.0;
+  if (z_disc <= 0.0)
+    z_disc = 1.0;
 
   const Eigen::Vector3d bounding_box_half_size = bounding_box_size * 0.5;
 
@@ -808,22 +1110,21 @@ void OctomapWorld::setFree(const Eigen::Vector3d& position,
 }
 */
 
-void OctomapWorld::setFree(const Eigen::Vector3d& position,
-                           const Eigen::Vector3d& bounding_box_size,
-		           const Eigen::Vector3d& bounding_box_offset) {
+void OctomapWorld::setFree(const Eigen::Vector3d &position,
+                           const Eigen::Vector3d &bounding_box_size,
+                           const Eigen::Vector3d &bounding_box_offset) {
   setLogOddsBoundingBox(position, bounding_box_size,
-                        octree_->getClampingThresMinLog(),
-			bounding_box_offset);
+                        octree_->getClampingThresMinLog(), bounding_box_offset);
 }
 
-void OctomapWorld::setOccupied(const Eigen::Vector3d& position,
-                               const Eigen::Vector3d& bounding_box_size) {
+void OctomapWorld::setOccupied(const Eigen::Vector3d &position,
+                               const Eigen::Vector3d &bounding_box_size) {
   setLogOddsBoundingBox(position, bounding_box_size,
                         octree_->getClampingThresMaxLog());
 }
 
 void OctomapWorld::getOccupiedPointCloud(
-    pcl::PointCloud<pcl::PointXYZ>* output_cloud) const {
+    pcl::PointCloud<pcl::PointXYZ> *output_cloud) const {
   CHECK_NOTNULL(output_cloud)->clear();
   unsigned int max_tree_depth = octree_->getTreeDepth();
   double resolution = octree_->getResolution();
@@ -840,8 +1141,8 @@ void OctomapWorld::getOccupiedPointCloud(
       // We use multiple points to visualize this filled volume.
       else {
         const unsigned int box_edge_length =
-            pow(2,max_tree_depth - it.getDepth() - 1);
-        const double bbx_offset = box_edge_length * resolution - resolution/2;
+            pow(2, max_tree_depth - it.getDepth() - 1);
+        const double bbx_offset = box_edge_length * resolution - resolution / 2;
         Eigen::Vector3d bbx_offset_vec(bbx_offset, bbx_offset, bbx_offset);
         Eigen::Vector3d center(it.getX(), it.getY(), it.getZ());
         Eigen::Vector3d bbx_min = center - bbx_offset_vec;
@@ -854,9 +1155,8 @@ void OctomapWorld::getOccupiedPointCloud(
                y_position += resolution) {
             for (double z_position = bbx_min.z(); z_position <= bbx_max.z();
                  z_position += resolution) {
-              output_cloud->push_back(pcl::PointXYZ(x_position,
-                                                    y_position,
-                                                    z_position));
+              output_cloud->push_back(
+                  pcl::PointXYZ(x_position, y_position, z_position));
             }
           }
         }
@@ -866,13 +1166,13 @@ void OctomapWorld::getOccupiedPointCloud(
 }
 
 void OctomapWorld::getOccupiedPointcloudInBoundingBox(
-    const Eigen::Vector3d& center, const Eigen::Vector3d& bounding_box_size,
-    pcl::PointCloud<pcl::PointXYZ>* output_cloud) const {
+    const Eigen::Vector3d &center, const Eigen::Vector3d &bounding_box_size,
+    pcl::PointCloud<pcl::PointXYZ> *output_cloud) const {
   CHECK_NOTNULL(output_cloud);
   output_cloud->clear();
 
   const double resolution = octree_->getResolution();
-  const double epsilon = 0.001;  // Small offset to not hit boundary of nodes.
+  const double epsilon = 0.001; // Small offset to not hit boundary of nodes.
   Eigen::Vector3d epsilon_3d;
   epsilon_3d.setConstant(epsilon);
 
@@ -896,7 +1196,7 @@ void OctomapWorld::getOccupiedPointcloudInBoundingBox(
         octomap::point3d point =
             octomap::point3d(x_position, y_position, z_position);
         octomap::OcTreeKey key = octree_->coordToKey(point);
-        octomap::OcTreeNode* node = octree_->search(key);
+        octomap::OcTreeNode *node = octree_->search(key);
         if (node != NULL && octree_->isNodeOccupied(node)) {
           output_cloud->push_back(
               pcl::PointXYZ(point.x(), point.y(), point.z()));
@@ -907,13 +1207,13 @@ void OctomapWorld::getOccupiedPointcloudInBoundingBox(
 }
 
 void OctomapWorld::getAllFreeBoxes(
-    std::vector<std::pair<Eigen::Vector3d, double> >* free_box_vector) const {
+    std::vector<std::pair<Eigen::Vector3d, double>> *free_box_vector) const {
   const bool occupied_boxes = false;
   getAllBoxes(occupied_boxes, free_box_vector);
 }
 
 void OctomapWorld::getAllOccupiedBoxes(
-    std::vector<std::pair<Eigen::Vector3d, double> >* occupied_box_vector)
+    std::vector<std::pair<Eigen::Vector3d, double>> *occupied_box_vector)
     const {
   const bool occupied_boxes = true;
   getAllBoxes(occupied_boxes, occupied_box_vector);
@@ -921,11 +1221,11 @@ void OctomapWorld::getAllOccupiedBoxes(
 
 void OctomapWorld::getAllBoxes(
     bool occupied_boxes,
-    std::vector<std::pair<Eigen::Vector3d, double> >* box_vector) const {
+    std::vector<std::pair<Eigen::Vector3d, double>> *box_vector) const {
   box_vector->clear();
   box_vector->reserve(octree_->size());
   for (octomap::SaliencyOcTree::leaf_iterator it = octree_->begin_leafs(),
-                                      end = octree_->end_leafs();
+                                              end = octree_->end_leafs();
        it != end; ++it) {
     Eigen::Vector3d cube_center(it.getX(), it.getY(), it.getZ());
     int depth_level = it.getDepth();
@@ -969,16 +1269,18 @@ void OctomapWorld::setLogOddsBoundingBox(
 } */
 
 void OctomapWorld::setLogOddsBoundingBox(
-    const Eigen::Vector3d& position, const Eigen::Vector3d& bounding_box_size, double log_odds_value,
-    const Eigen::Vector3d& offset) {
+    const Eigen::Vector3d &position, const Eigen::Vector3d &bounding_box_size,
+    double log_odds_value, const Eigen::Vector3d &offset) {
   const bool lazy_eval = true;
   const double resolution = octree_->getResolution();
-  const double epsilon = 0.001;  // Small offset to not hit boundary of nodes.
+  const double epsilon = 0.001; // Small offset to not hit boundary of nodes.
   Eigen::Vector3d epsilon_3d;
   epsilon_3d.setConstant(epsilon);
 
-  Eigen::Vector3d bbx_min = position + offset - bounding_box_size / 2 - epsilon_3d;
-  Eigen::Vector3d bbx_max = position + offset + bounding_box_size / 2 + epsilon_3d;
+  Eigen::Vector3d bbx_min =
+      position + offset - bounding_box_size / 2 - epsilon_3d;
+  Eigen::Vector3d bbx_max =
+      position + offset + bounding_box_size / 2 + epsilon_3d;
 
   for (double x_position = bbx_min.x(); x_position <= bbx_max.x();
        x_position += resolution) {
@@ -986,7 +1288,8 @@ void OctomapWorld::setLogOddsBoundingBox(
          y_position += resolution) {
       for (double z_position = bbx_min.z(); z_position <= bbx_max.z();
            z_position += resolution) {
-        octomap::point3d point = octomap::point3d(x_position, y_position, z_position);
+        octomap::point3d point =
+            octomap::point3d(x_position, y_position, z_position);
         octree_->setNodeValue(point, log_odds_value, lazy_eval);
       }
     }
@@ -995,15 +1298,15 @@ void OctomapWorld::setLogOddsBoundingBox(
   octree_->updateInnerOccupancy();
 }
 
-bool OctomapWorld::getOctomapBinaryMsg(octomap_msgs::Octomap* msg) const {
+bool OctomapWorld::getOctomapBinaryMsg(octomap_msgs::Octomap *msg) const {
   return octomap_msgs::binaryMapToMsg(*octree_, *msg);
 }
 
-bool OctomapWorld::getOctomapFullMsg(octomap_msgs::Octomap* msg) const {
+bool OctomapWorld::getOctomapFullMsg(octomap_msgs::Octomap *msg) const {
   return octomap_msgs::fullMapToMsg(*octree_, *msg);
 }
 
-void OctomapWorld::setOctomapFromMsg(const octomap_msgs::Octomap& msg) {
+void OctomapWorld::setOctomapFromMsg(const octomap_msgs::Octomap &msg) {
   if (msg.binary) {
     setOctomapFromBinaryMsg(msg);
   } else {
@@ -1011,17 +1314,17 @@ void OctomapWorld::setOctomapFromMsg(const octomap_msgs::Octomap& msg) {
   }
 }
 
-void OctomapWorld::setOctomapFromBinaryMsg(const octomap_msgs::Octomap& msg) {
-  octree_.reset(
-      dynamic_cast<octomap::SaliencyOcTree*>(octomap_msgs::binaryMsgToMap(msg)));
+void OctomapWorld::setOctomapFromBinaryMsg(const octomap_msgs::Octomap &msg) {
+  octree_.reset(dynamic_cast<octomap::SaliencyOcTree *>(
+      octomap_msgs::binaryMsgToMap(msg)));
 }
 
-void OctomapWorld::setOctomapFromFullMsg(const octomap_msgs::Octomap& msg) {
+void OctomapWorld::setOctomapFromFullMsg(const octomap_msgs::Octomap &msg) {
   octree_.reset(
-      dynamic_cast<octomap::SaliencyOcTree*>(octomap_msgs::fullMsgToMap(msg)));
+      dynamic_cast<octomap::SaliencyOcTree *>(octomap_msgs::fullMsgToMap(msg)));
 }
 
-bool OctomapWorld::loadOctomapFromFile(const std::string& filename) {
+bool OctomapWorld::loadOctomapFromFile(const std::string &filename) {
   if (!octree_) {
     // TODO(helenol): Resolution shouldn't matter... I think. I'm not sure.
     octree_.reset(new octomap::SaliencyOcTree(0.05));
@@ -1029,21 +1332,20 @@ bool OctomapWorld::loadOctomapFromFile(const std::string& filename) {
   return octree_->readBinary(filename);
 }
 
-bool OctomapWorld::writeOctomapToFile(const std::string& filename) {
+bool OctomapWorld::writeOctomapToFile(const std::string &filename) {
 
   std::string fn = filename + ".txt";
   std::cout << "Save a log file in:" << fn << std::endl;
-  std::ofstream log_file( fn.c_str(), std::ofstream::out);
+  std::ofstream log_file(fn.c_str(), std::ofstream::out);
   for (octomap::SaliencyOcTree::leaf_iterator it = octree_->begin_leafs(),
-                            end = octree_->end_leafs(); it != end; ++it) {
+                                              end = octree_->end_leafs();
+       it != end; ++it) {
     if (octree_->isNodeOccupied(*it)) {
-      octomap::SaliencyOcTreeNode& node = *it;
-      octomap::SaliencyOcTreeNode::Saliency& saliency = node.getSaliency();
-      log_file <<  it.getX() << "," << it.getY() << "," << it.getZ() << "," <<
-      (int)saliency.type  << "," <<
-      (int)saliency.value <<"," <<
-      saliency.viewpoint << "," <<
-      saliency.density << "\n";
+      octomap::SaliencyOcTreeNode &node = *it;
+      octomap::SaliencyOcTreeNode::Saliency &saliency = node.getSaliency();
+      log_file << it.getX() << "," << it.getY() << "," << it.getZ() << ","
+               << (int)saliency.type << "," << (int)saliency.value << ","
+               << saliency.viewpoint << "," << saliency.density << "\n";
     }
   }
   log_file.close();
@@ -1052,7 +1354,7 @@ bool OctomapWorld::writeOctomapToFile(const std::string& filename) {
   return octree_->writeBinary(fn1);
 }
 
-bool OctomapWorld::isSpeckleNode(const octomap::OcTreeKey& key) const {
+bool OctomapWorld::isSpeckleNode(const octomap::OcTreeKey &key) const {
   octomap::OcTreeKey current_key;
   // Search neighbors in a +/-1 key range cube. If there are neighbors, it's
   // not a speckle.
@@ -1064,7 +1366,7 @@ bool OctomapWorld::isSpeckleNode(const octomap::OcTreeKey& key) const {
       for (current_key[0] = key[0] - 1; current_key[0] <= key[0] + 1;
            ++current_key[0]) {
         if (current_key != key) {
-          octomap::OcTreeNode* node = octree_->search(key);
+          octomap::OcTreeNode *node = octree_->search(key);
           if (node && octree_->isNodeOccupied(node)) {
             // We have a neighbor => not a speckle!
             return false;
@@ -1077,15 +1379,16 @@ bool OctomapWorld::isSpeckleNode(const octomap::OcTreeKey& key) const {
 }
 
 void OctomapWorld::generateMarkerArray(
-    const std::string& tf_frame,
-    visualization_msgs::MarkerArray* occupied_nodes,
-    visualization_msgs::MarkerArray* free_nodes) {
+    const std::string &tf_frame,
+    visualization_msgs::MarkerArray *occupied_nodes,
+    visualization_msgs::MarkerArray *free_nodes) {
   CHECK_NOTNULL(occupied_nodes);
   CHECK_NOTNULL(free_nodes);
 
   // disable prune
-  // it will not perform the prune even enable this function since I disable the comparison in saliencyoctree code
-  //octree_->prune();
+  // it will not perform the prune even enable this function since I disable the
+  // comparison in saliencyoctree code
+  // octree_->prune();
   int tree_depth = octree_->getTreeDepth() + 1;
 
   // In the marker array, assign each node to its respective depth level, since
@@ -1121,7 +1424,7 @@ void OctomapWorld::generateMarkerArray(
   }
 
   for (octomap::SaliencyOcTree::leaf_iterator it = octree_->begin_leafs(),
-                                      end = octree_->end_leafs();
+                                              end = octree_->end_leafs();
        it != end; ++it) {
     geometry_msgs::Point cube_center;
     cube_center.x = it.getX();
@@ -1139,13 +1442,13 @@ void OctomapWorld::generateMarkerArray(
     if (octree_->isNodeOccupied(*it)) {
       occupied_nodes->markers[depth_level].points.push_back(cube_center);
 
-//#ifdef OCTOMAP_IS_COLORED
+      //#ifdef OCTOMAP_IS_COLORED
       occupied_nodes->markers[depth_level].colors.push_back(
-             getEncodedColor(it));
-//#else
+          getEncodedColor(it));
+      //#else
       // occupied_nodes->markers[depth_level].colors.push_back(
       //     percentToColor(colorizeMapByHeight(it.getZ(), min_z, max_z)));
-//#endif
+      //#endif
 
     } else {
       free_nodes->markers[depth_level].points.push_back(cube_center);
@@ -1153,7 +1456,6 @@ void OctomapWorld::generateMarkerArray(
           percentToColor(colorizeMapByHeight(it.getZ(), min_z, max_z)));
     }
   }
-
 
   for (int i = 0; i < tree_depth; ++i) {
     if (occupied_nodes->markers[i].points.size() > 0) {
@@ -1170,8 +1472,8 @@ void OctomapWorld::generateMarkerArray(
   }
 }
 
-bool OctomapWorld::getHeatMapColor(float value, float &red, float &green, float &blue)
-{
+bool OctomapWorld::getHeatMapColor(float value, float &red, float &green,
+                                   float &blue) {
   // const int NUM_COLORS = 9;
   // static float color[NUM_COLORS][3] = {
   //                                     {255, 255, 204},
@@ -1186,13 +1488,8 @@ bool OctomapWorld::getHeatMapColor(float value, float &red, float &green, float 
 
   const int NUM_COLORS = 6;
   static float color[NUM_COLORS][3] = {
-                                      {254, 178,  76},
-                                      {253, 141,  60},
-                                      {252,  78,  42},
-                                      {227,  26,  28},
-                                      {189,   0,  38},
-                                      {128,   0,  38}}; //0-255 scale
-
+      {254, 178, 76}, {253, 141, 60}, {252, 78, 42},
+      {227, 26, 28},  {189, 0, 38},   {128, 0, 38}}; // 0-255 scale
 
   // const int NUM_COLORS = 4;
   // static float color[NUM_COLORS][3] = {
@@ -1203,54 +1500,54 @@ bool OctomapWorld::getHeatMapColor(float value, float &red, float &green, float 
   //   {1,0,0}  //red
   // };
 
+  float thres = (float)(salconfig_.saliency_threshold) / 255;
+  value = (value - thres) / (1 - thres); // stretch
 
-  float thres = (float)(salconfig_.saliency_threshold)/255;
-  value = (value - thres)/ (1 - thres); // stretch
+  int idx1; // |-- Our desired color will be between these two indexes in
+            // "color".
+  int idx2; // |
+  float fractBetween =
+      0; // Fraction between "idx1" and "idx2" where our value is.
 
-  int idx1;        // |-- Our desired color will be between these two indexes in "color".
-  int idx2;        // |
-  float fractBetween = 0;  // Fraction between "idx1" and "idx2" where our value is.
-
-  if(value <= 0) idx1 = idx2 = 0; // accounts for an input <=0
-  else if(value >= 1) idx1 = idx2 = NUM_COLORS-1; // accounts for an input >=0
-  else{
-    value = value * (NUM_COLORS-1);        // Will multiply value by 3.
-    idx1  = floor(value);                  // Our desired color will be after this index.
-    idx2  = idx1+1;                        // ... and before this index (inclusive).
-    fractBetween = value - (float)idx1;    // Distance between the two indexes (0-1).
+  if (value <= 0)
+    idx1 = idx2 = 0; // accounts for an input <=0
+  else if (value >= 1)
+    idx1 = idx2 = NUM_COLORS - 1; // accounts for an input >=0
+  else {
+    value = value * (NUM_COLORS - 1); // Will multiply value by 3.
+    idx1 = floor(value); // Our desired color will be after this index.
+    idx2 = idx1 + 1;     // ... and before this index (inclusive).
+    fractBetween =
+        value - (float)idx1; // Distance between the two indexes (0-1).
   }
-  red   = (color[idx2][0] - color[idx1][0])*fractBetween + color[idx1][0];
-  green = (color[idx2][1] - color[idx1][1])*fractBetween + color[idx1][1];
-  blue  = (color[idx2][2] - color[idx1][2])*fractBetween + color[idx1][2];
-  red   /= 255.0;
+  red = (color[idx2][0] - color[idx1][0]) * fractBetween + color[idx1][0];
+  green = (color[idx2][1] - color[idx1][1]) * fractBetween + color[idx1][1];
+  blue = (color[idx2][2] - color[idx1][2]) * fractBetween + color[idx1][2];
+  red /= 255.0;
   green /= 255.0;
-  blue  /= 255.0;
+  blue /= 255.0;
   return true;
 }
 
-std_msgs::ColorRGBA OctomapWorld::getEncodedColor(octomap::SaliencyOcTree::iterator it)
-{
-  octomap::SaliencyOcTreeNode& node = *it;
-  octomap::SaliencyOcTreeNode::Saliency& saliency = node.getSaliency();
+std_msgs::ColorRGBA
+OctomapWorld::getEncodedColor(octomap::SaliencyOcTree::iterator it) {
+  octomap::SaliencyOcTreeNode &node = *it;
+  octomap::SaliencyOcTreeNode::Saliency &saliency = node.getSaliency();
 
   std_msgs::ColorRGBA color;
   color.a = 1;
 
-  if (saliency.type == octomap::SaliencyOcTreeNode::Saliency::VOXEL_SALIENCY)
-  {
+  if (saliency.type == octomap::SaliencyOcTreeNode::Saliency::VOXEL_SALIENCY) {
     // getHeatMapColor(((float)saliency.value)/255, color.r, color.g, color.b);
     color.r = 0.7;
     color.g = 0.14;
     color.b = 0;
-  }
-  else if (saliency.type == octomap::SaliencyOcTreeNode::Saliency::VOXEL_RETIRED)
-  {
+  } else if (saliency.type ==
+             octomap::SaliencyOcTreeNode::Saliency::VOXEL_RETIRED) {
     color.r = 0;
     color.g = 1;
     color.b = 0;
-  }
-  else
-  {
+  } else {
     color.r = 0;
     color.g = 0.5;
     color.b = 1;
@@ -1280,47 +1577,48 @@ std_msgs::ColorRGBA OctomapWorld::percentToColor(double h) const {
 
   i = floor(h);
   f = h - i;
-  if (!(i & 1)) f = 1 - f;  // if i is even
+  if (!(i & 1))
+    f = 1 - f; // if i is even
   m = v * (1 - s);
   n = v * (1 - s * f);
 
   switch (i) {
-    case 6:
-    case 0:
-      color.r = v;
-      color.g = n;
-      color.b = m;
-      break;
-    case 1:
-      color.r = n;
-      color.g = v;
-      color.b = m;
-      break;
-    case 2:
-      color.r = m;
-      color.g = v;
-      color.b = n;
-      break;
-    case 3:
-      color.r = m;
-      color.g = n;
-      color.b = v;
-      break;
-    case 4:
-      color.r = n;
-      color.g = m;
-      color.b = v;
-      break;
-    case 5:
-      color.r = v;
-      color.g = m;
-      color.b = n;
-      break;
-    default:
-      color.r = 1;
-      color.g = 0.5;
-      color.b = 0.5;
-      break;
+  case 6:
+  case 0:
+    color.r = v;
+    color.g = n;
+    color.b = m;
+    break;
+  case 1:
+    color.r = n;
+    color.g = v;
+    color.b = m;
+    break;
+  case 2:
+    color.r = m;
+    color.g = v;
+    color.b = n;
+    break;
+  case 3:
+    color.r = m;
+    color.g = n;
+    color.b = v;
+    break;
+  case 4:
+    color.r = n;
+    color.g = m;
+    color.b = v;
+    break;
+  case 5:
+    color.r = v;
+    color.g = m;
+    color.b = n;
+    break;
+  default:
+    color.r = 1;
+    color.g = 0.5;
+    color.b = 0.5;
+    break;
   }
 
   return color;
@@ -1347,8 +1645,8 @@ Eigen::Vector3d OctomapWorld::getMapSize() const {
   return Eigen::Vector3d(max_x - min_x, max_y - min_y, max_z - min_z);
 }
 
-void OctomapWorld::getMapBounds(Eigen::Vector3d* min_bound,
-                                Eigen::Vector3d* max_bound) const {
+void OctomapWorld::getMapBounds(Eigen::Vector3d *min_bound,
+                                Eigen::Vector3d *max_bound) const {
   CHECK_NOTNULL(min_bound);
   CHECK_NOTNULL(max_bound);
   // Metric min and max z of the map:
@@ -1360,20 +1658,20 @@ void OctomapWorld::getMapBounds(Eigen::Vector3d* min_bound,
   *max_bound = Eigen::Vector3d(max_x, max_y, max_z);
 }
 
-void OctomapWorld::setRobotSize(const Eigen::Vector3d& robot_size) {
+void OctomapWorld::setRobotSize(const Eigen::Vector3d &robot_size) {
   robot_size_ = robot_size;
 }
 
 Eigen::Vector3d OctomapWorld::getRobotSize() const { return robot_size_; }
 
 bool OctomapWorld::checkCollisionWithRobot(
-    const Eigen::Vector3d& robot_position) {
+    const Eigen::Vector3d &robot_position) {
   return checkSinglePoseCollision(robot_position);
 }
 
 bool OctomapWorld::checkPathForCollisionsWithRobot(
-    const std::vector<Eigen::Vector3d>& robot_positions,
-    size_t* collision_index) {
+    const std::vector<Eigen::Vector3d> &robot_positions,
+    size_t *collision_index) {
   // Iterate over vector of poses.
   // Check each one.
   // Return when a collision is found, and return the index of the earliest
@@ -1390,7 +1688,7 @@ bool OctomapWorld::checkPathForCollisionsWithRobot(
 }
 
 bool OctomapWorld::checkSinglePoseCollision(
-    const Eigen::Vector3d& robot_position) const {
+    const Eigen::Vector3d &robot_position) const {
   if (params_.treat_unknown_as_occupied) {
     return (CellStatus::kFree !=
             getCellStatusBoundingBox(robot_position, robot_size_));
@@ -1401,8 +1699,8 @@ bool OctomapWorld::checkSinglePoseCollision(
 }
 
 void OctomapWorld::getChangedPoints(
-    std::vector<Eigen::Vector3d>* changed_points,
-    std::vector<bool>* changed_states) {
+    std::vector<Eigen::Vector3d> *changed_points,
+    std::vector<bool> *changed_states) {
   CHECK_NOTNULL(changed_points);
   // These keys are always *leaf node* keys, even if the actual change was in
   // a larger cube (see Octomap docs).
@@ -1416,7 +1714,7 @@ void OctomapWorld::getChangedPoints(
 
   for (octomap::KeyBoolMap::const_iterator iter = start_key; iter != end_key;
        ++iter) {
-    octomap::OcTreeNode* node = octree_->search(iter->first);
+    octomap::OcTreeNode *node = octree_->search(iter->first);
     bool occupied = octree_->isNodeOccupied(node);
     Eigen::Vector3d center =
         pointOctomapToEigen(octree_->keyToCoord(iter->first));
@@ -1429,10 +1727,8 @@ void OctomapWorld::getChangedPoints(
   octree_->resetChangeDetection();
 }
 
-
-void OctomapWorld::clearBBX(
-    const Eigen::Vector3d& point,
-    const Eigen::Vector3d& bounding_box_size) {
+void OctomapWorld::clearBBX(const Eigen::Vector3d &point,
+                            const Eigen::Vector3d &bounding_box_size) {
   Eigen::Vector3d bbx_min_eigen = point - bounding_box_size / 2;
   Eigen::Vector3d bbx_max_eigen = point + bounding_box_size / 2;
 
@@ -1440,15 +1736,22 @@ void OctomapWorld::clearBBX(
   octomap::point3d bbx_max = pointEigenToOctomap(bbx_max_eigen);
 
   float thresMin = octree_->getClampingThresMinLog();
-  for (octomap::SaliencyOcTree::leaf_bbx_iterator iter = octree_->begin_leafs_bbx(bbx_min, bbx_max), end = octree_->end_leafs_bbx();
+  for (octomap::SaliencyOcTree::leaf_bbx_iterator
+           iter = octree_->begin_leafs_bbx(bbx_min, bbx_max),
+           end = octree_->end_leafs_bbx();
        iter != end; ++iter) {
-    //From: updateNode (const OcTreeKey &key, bool occupied, bool lazy_eval=false), there is also: updateNode (const point3d &value, float log_odds_update, bool lazy_eval=false)
-    //octree_->updateNode(iter.getKey(), false); //Seems to act additively to current knowledge (in this iteration and the ones before) and not completely override the map
-    iter->setLogOdds(/*octomap::logodds(*/thresMin/*)*/);
-    //iter->updateTimestamp();
+    // From: updateNode (const OcTreeKey &key, bool occupied, bool
+    // lazy_eval=false), there is also: updateNode (const point3d &value, float
+    // log_odds_update, bool lazy_eval=false)
+    // octree_->updateNode(iter.getKey(), false); //Seems to act additively to
+    // current knowledge (in this iteration and the ones before) and not
+    // completely override the map
+    iter->setLogOdds(/*octomap::logodds(*/ thresMin /*)*/);
+    // iter->updateTimestamp();
   }
-  octree_->updateInnerOccupancy(); //TODOTry not to call it a
-  //TODO: which is faster? (setLogOdds+updateInner or updateNode), most probably the 2nd for small bbx
+  octree_->updateInnerOccupancy(); // TODOTry not to call it a
+  // TODO: which is faster? (setLogOdds+updateInner or updateNode), most
+  // probably the 2nd for small bbx
 }
 
 // unsigned int OctomapWorld::getLastUpdateTime(){
@@ -1456,5 +1759,4 @@ void OctomapWorld::clearBBX(
 //   return 0;
 // }
 
-
-}  // namespace volumetric_mapping
+} // namespace volumetric_mapping

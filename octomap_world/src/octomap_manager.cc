@@ -36,28 +36,21 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include "octomap_world/octomap_manager.h"
 
 #include <glog/logging.h>
-#include <minkindr_conversions/kindr_tf.h>
 #include <minkindr_conversions/kindr_msg.h>
+#include <minkindr_conversions/kindr_tf.h>
 #include <minkindr_conversions/kindr_xml.h>
 #include <pcl/io/pcd_io.h>
 #include <pcl/io/ply_io.h>
 
 namespace volumetric_mapping {
 
-OctomapManager::OctomapManager(const ros::NodeHandle& nh,
-                               const ros::NodeHandle& nh_private)
-    : nh_(nh),
-      nh_private_(nh_private),
-      world_frame_("world"),
-      robot_frame_("state"),
-      use_tf_transforms_(true),
-      latch_topics_(true),
-      timestamp_tolerance_ns_(10000000),
-      Q_initialized_(false),
-      Q_(Eigen::Matrix4d::Identity()),
-      full_image_size_(752, 480),
-      map_publish_frequency_(0.0),
-      tf_update_frequency_(5.0) {
+OctomapManager::OctomapManager(const ros::NodeHandle &nh,
+                               const ros::NodeHandle &nh_private)
+    : nh_(nh), nh_private_(nh_private), world_frame_("world"),
+      robot_frame_("state"), use_tf_transforms_(true), latch_topics_(true),
+      timestamp_tolerance_ns_(10000000), Q_initialized_(false),
+      Q_(Eigen::Matrix4d::Identity()), full_image_size_(752, 480),
+      map_publish_frequency_(0.0), tf_update_frequency_(5.0) {
   setParametersFromROS();
   subscribe();
   advertiseServices();
@@ -82,9 +75,13 @@ void OctomapManager::setParametersFromROS() {
   SaliencyParameters sal_params;
   nh_private_.param("saliency/alpha", sal_params.alpha, sal_params.alpha);
   nh_private_.param("saliency/beta", sal_params.beta, sal_params.beta);
-  nh_private_.param("saliency/saliency_threshold", sal_params.saliency_threshold, sal_params.saliency_threshold);
-  nh_private_.param("saliency/projection_limit", sal_params.projection_limit, sal_params.projection_limit);
-  nh_private_.param("saliency/ground_limit", sal_params.ground_limit, sal_params.ground_limit);
+  nh_private_.param("saliency/saliency_threshold",
+                    sal_params.saliency_threshold,
+                    sal_params.saliency_threshold);
+  nh_private_.param("saliency/projection_limit", sal_params.projection_limit,
+                    sal_params.projection_limit);
+  nh_private_.param("saliency/ground_limit", sal_params.ground_limit,
+                    sal_params.ground_limit);
   salconfig_ = sal_params;
 
   OctomapParameters params;
@@ -125,8 +122,9 @@ void OctomapManager::setParametersFromROS() {
   nh_private_.param("change_detection_enabled", params.change_detection_enabled,
                     params.change_detection_enabled);
 
-  nh_private_.param("tf_update_frequency", tf_update_frequency_, tf_update_frequency_);
-  tf_update_latency = ros::Duration(1.0/tf_update_frequency_);
+  nh_private_.param("tf_update_frequency", tf_update_frequency_,
+                    tf_update_frequency_);
+  tf_update_latency = ros::Duration(1.0 / tf_update_frequency_);
 
   // Try to initialize Q matrix from parameters, if available.
   std::vector<double> Q_vec;
@@ -181,7 +179,7 @@ void OctomapManager::setParametersFromROS() {
   setOctomapParameters(params);
 }
 
-bool OctomapManager::setQFromParams(std::vector<double>* Q_vec) {
+bool OctomapManager::setQFromParams(std::vector<double> *Q_vec) {
   if (Q_vec->size() != 16) {
     ROS_ERROR_STREAM("Invalid Q matrix size, expected size: 16, actual size: "
                      << Q_vec->size());
@@ -189,7 +187,7 @@ bool OctomapManager::setQFromParams(std::vector<double>* Q_vec) {
   }
 
   // Try to map the vector as coefficients.
-  Eigen::Map<Eigen::Matrix<double, 4, 4, Eigen::RowMajor> > Q_vec_map(
+  Eigen::Map<Eigen::Matrix<double, 4, 4, Eigen::RowMajor>> Q_vec_map(
       Q_vec->data());
   // Copy over to the Q member.
   Q_ = Q_vec_map;
@@ -210,7 +208,7 @@ void OctomapManager::subscribe() {
       nh_.subscribe("input_octomap", 1, &OctomapManager::octomapCallback, this);
 }
 
-void OctomapManager::octomapCallback(const octomap_msgs::Octomap& msg) {
+void OctomapManager::octomapCallback(const octomap_msgs::Octomap &msg) {
   setOctomapFromMsg(msg);
   publishAll();
   ROS_INFO_ONCE("Got octomap from message.");
@@ -301,10 +299,11 @@ void OctomapManager::publishAll() {
   if (use_tf_transforms_ && nearest_obstacle_pub_.getNumSubscribers() > 0) {
     Transformation robot_to_world;
     if (lookupTransformTf(robot_frame_, world_frame_, ros::Time::now(),
-                      &robot_to_world)) {
+                          &robot_to_world)) {
       Eigen::Vector3d robot_center = robot_to_world.getPosition();
       pcl::PointCloud<pcl::PointXYZ> point_cloud;
-      getOccupiedPointcloudInBoundingBox(robot_center, robot_size_, &point_cloud);
+      getOccupiedPointcloudInBoundingBox(robot_center, robot_size_,
+                                         &point_cloud);
       sensor_msgs::PointCloud2 cloud;
       pcl::toROSMsg(point_cloud, cloud);
       cloud.header.frame_id = world_frame_;
@@ -314,40 +313,40 @@ void OctomapManager::publishAll() {
   }
 }
 
-void OctomapManager::publishAllEvent(const ros::TimerEvent& e) { publishAll(); }
+void OctomapManager::publishAllEvent(const ros::TimerEvent &e) { publishAll(); }
 
-bool OctomapManager::resetMapCallback(std_srvs::Empty::Request& request,
-                                      std_srvs::Empty::Response& response) {
+bool OctomapManager::resetMapCallback(std_srvs::Empty::Request &request,
+                                      std_srvs::Empty::Response &response) {
   resetMap();
   return true;
 }
 
-bool OctomapManager::publishAllCallback(std_srvs::Empty::Request& request,
-                                        std_srvs::Empty::Response& response) {
+bool OctomapManager::publishAllCallback(std_srvs::Empty::Request &request,
+                                        std_srvs::Empty::Response &response) {
   publishAll();
   return true;
 }
 
 bool OctomapManager::getOctomapCallback(
-    octomap_msgs::GetOctomap::Request& request,
-    octomap_msgs::GetOctomap::Response& response) {
+    octomap_msgs::GetOctomap::Request &request,
+    octomap_msgs::GetOctomap::Response &response) {
   return getOctomapFullMsg(&response.map);
 }
 
 bool OctomapManager::loadOctomapCallback(
-    volumetric_msgs::LoadMap::Request& request,
-    volumetric_msgs::LoadMap::Response& response) {
-  std::string extension = request.file_path.substr(
-      request.file_path.find_last_of(".") + 1);
+    volumetric_msgs::LoadMap::Request &request,
+    volumetric_msgs::LoadMap::Response &response) {
+  std::string extension =
+      request.file_path.substr(request.file_path.find_last_of(".") + 1);
   if (extension == "bt") {
     return loadOctomapFromFile(request.file_path);
   } else {
     pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(
         new pcl::PointCloud<pcl::PointXYZ>);
     if (extension == "pcd") {
-      pcl::io::loadPCDFile < pcl::PointXYZ > (request.file_path, *cloud);
+      pcl::io::loadPCDFile<pcl::PointXYZ>(request.file_path, *cloud);
     } else if (extension == "ply") {
-      pcl::io::loadPLYFile < pcl::PointXYZ > (request.file_path, *cloud);
+      pcl::io::loadPLYFile<pcl::PointXYZ>(request.file_path, *cloud);
     } else {
       ROS_ERROR_STREAM(
           "No known file extension (.bt, .pcd, .ply): " << request.file_path);
@@ -368,14 +367,14 @@ bool OctomapManager::loadOctomapCallback(
 }
 
 bool OctomapManager::saveOctomapCallback(
-    volumetric_msgs::SaveMap::Request& request,
-    volumetric_msgs::SaveMap::Response& response) {
+    volumetric_msgs::SaveMap::Request &request,
+    volumetric_msgs::SaveMap::Response &response) {
   return writeOctomapToFile(request.file_path);
 }
 
 bool OctomapManager::savePointCloudCallback(
-    volumetric_msgs::SaveMap::Request& request,
-    volumetric_msgs::SaveMap::Response& response) {
+    volumetric_msgs::SaveMap::Request &request,
+    volumetric_msgs::SaveMap::Response &response) {
   pcl::PointCloud<pcl::PointXYZ> point_cloud;
   getOccupiedPointCloud(&point_cloud);
   pcl::io::savePLYFileASCII(request.file_path, point_cloud);
@@ -383,8 +382,8 @@ bool OctomapManager::savePointCloudCallback(
 }
 
 bool OctomapManager::setBoxOccupancyCallback(
-    volumetric_msgs::SetBoxOccupancy::Request& request,
-    volumetric_msgs::SetBoxOccupancy::Response& response) {
+    volumetric_msgs::SetBoxOccupancy::Request &request,
+    volumetric_msgs::SetBoxOccupancy::Response &response) {
   Eigen::Vector3d bounding_box_center;
   Eigen::Vector3d bounding_box_size;
 
@@ -402,8 +401,8 @@ bool OctomapManager::setBoxOccupancyCallback(
 }
 
 bool OctomapManager::setDisplayBoundsCallback(
-    volumetric_msgs::SetDisplayBounds::Request& request,
-    volumetric_msgs::SetDisplayBounds::Response& response) {
+    volumetric_msgs::SetDisplayBounds::Request &request,
+    volumetric_msgs::SetDisplayBounds::Response &response) {
   params_.visualize_min_z = request.min_z;
   params_.visualize_max_z = request.max_z;
   publishAll();
@@ -411,14 +410,14 @@ bool OctomapManager::setDisplayBoundsCallback(
 }
 
 void OctomapManager::leftCameraInfoCallback(
-    const sensor_msgs::CameraInfoPtr& left_info) {
+    const sensor_msgs::CameraInfoPtr &left_info) {
   left_info_ = left_info;
   if (left_info_ && right_info_ && !Q_initialized_) {
     calculateQ();
   }
 }
 void OctomapManager::rightCameraInfoCallback(
-    const sensor_msgs::CameraInfoPtr& right_info) {
+    const sensor_msgs::CameraInfoPtr &right_info) {
   right_info_ = right_info;
   if (left_info_ && right_info_ && !Q_initialized_) {
     calculateQ();
@@ -433,7 +432,7 @@ void OctomapManager::calculateQ() {
 }
 
 void OctomapManager::insertDisparityImageWithTf(
-    const stereo_msgs::DisparityImageConstPtr& disparity) {
+    const stereo_msgs::DisparityImageConstPtr &disparity) {
   if (!Q_initialized_) {
     ROS_WARN_THROTTLE(
         1, "No camera info available yet, skipping adding disparity.");
@@ -449,7 +448,7 @@ void OctomapManager::insertDisparityImageWithTf(
 }
 
 void OctomapManager::insertPointcloudWithTf(
-    const sensor_msgs::PointCloud2::ConstPtr& pointcloud) {
+    const sensor_msgs::PointCloud2::ConstPtr &pointcloud) {
   // Look up transform from sensor frame to world frame.
   Transformation sensor_to_world;
   if (lookupTransform(pointcloud->header.frame_id, world_frame_,
@@ -458,26 +457,26 @@ void OctomapManager::insertPointcloudWithTf(
   }
 }
 
-void OctomapManager::setCamInfo(image_geometry::PinholeCameraModel& camInfo)
-{
+void OctomapManager::setCamInfo(image_geometry::PinholeCameraModel &camInfo) {
   setCameraModel(camInfo);
 }
 
-void OctomapManager::insertSaliencyImgWithTf(const sensor_msgs::ImageConstPtr& img)
-{
+void OctomapManager::insertSaliencyImgWithTf(
+    const sensor_msgs::ImageConstPtr &img) {
   Transformation sensor_to_world;
   std::string cam_frame_id = img->header.frame_id;
-  if (lookupTransform(cam_frame_id, world_frame_,
-                      img->header.stamp, &sensor_to_world )) {
+  if (lookupTransform(cam_frame_id, world_frame_, img->header.stamp,
+                      &sensor_to_world)) {
     insertSaliencyImage(sensor_to_world, img);
+  } else {
+    ROS_WARN("Can not lookupTransform");
   }
 }
 
-
-bool OctomapManager::lookupTransform(const std::string& from_frame,
-                                     const std::string& to_frame,
-                                     const ros::Time& timestamp,
-                                     Transformation* transform) {
+bool OctomapManager::lookupTransform(const std::string &from_frame,
+                                     const std::string &to_frame,
+                                     const ros::Time &timestamp,
+                                     Transformation *transform) {
   if (use_tf_transforms_) {
     return lookupTransformTf(from_frame, to_frame, timestamp, transform);
   } else {
@@ -485,18 +484,19 @@ bool OctomapManager::lookupTransform(const std::string& from_frame,
   }
 }
 
-bool OctomapManager::lookupTransformTf(const std::string& from_frame,
-                                       const std::string& to_frame,
-                                       const ros::Time& timestamp,
-                                       Transformation* transform) {
+bool OctomapManager::lookupTransformTf(const std::string &from_frame,
+                                       const std::string &to_frame,
+                                       const ros::Time &timestamp,
+                                       Transformation *transform) {
   tf::StampedTransform tf_transform;
 
   ros::Time time_to_lookup = timestamp;
   try {
-    tf_listener_.waitForTransform(to_frame, from_frame, time_to_lookup, tf_update_latency);
+    tf_listener_.waitForTransform(to_frame, from_frame, time_to_lookup,
+                                  tf_update_latency);
     tf_listener_.lookupTransform(to_frame, from_frame, time_to_lookup,
                                  tf_transform);
-  } catch (tf::TransformException& ex) {
+  } catch (tf::TransformException &ex) {
     ROS_ERROR_STREAM(
         "Error getting TF transform from sensor data: " << ex.what());
     return false;
@@ -507,14 +507,14 @@ bool OctomapManager::lookupTransformTf(const std::string& from_frame,
 }
 
 void OctomapManager::transformCallback(
-    const geometry_msgs::TransformStamped& transform_msg) {
+    const geometry_msgs::TransformStamped &transform_msg) {
   transform_queue_.push_back(transform_msg);
 }
 
-bool OctomapManager::lookupTransformQueue(const std::string& from_frame,
-                                          const std::string& to_frame,
-                                          const ros::Time& timestamp,
-                                          Transformation* transform) {
+bool OctomapManager::lookupTransformQueue(const std::string &from_frame,
+                                          const std::string &to_frame,
+                                          const ros::Time &timestamp,
+                                          Transformation *transform) {
   // Try to match the transforms in the queue.
   bool match_found = false;
   std::deque<geometry_msgs::TransformStamped>::iterator it =
@@ -551,13 +551,13 @@ bool OctomapManager::lookupTransformQueue(const std::string& from_frame,
     ROS_WARN_STREAM_THROTTLE(
         30, "No match found for transform timestamp: " << timestamp);
     if (!transform_queue_.empty()) {
-      ROS_WARN_STREAM_THROTTLE(
-          30,
-          "Queue front: " << transform_queue_.front().header.stamp
-                          << " back: " << transform_queue_.back().header.stamp);
+      ROS_WARN_STREAM_THROTTLE(30, "Queue front: "
+                                       << transform_queue_.front().header.stamp
+                                       << " back: "
+                                       << transform_queue_.back().header.stamp);
     }
   }
   return match_found;
 }
 
-}  // namespace volumetric_mapping
+} // namespace volumetric_mapping
