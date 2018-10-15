@@ -33,8 +33,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 * exploration algorithm.
 */
 
-#include <ctime>
 #include "octomap_world/octomap_world.h"
+#include <ctime>
 
 #include <glog/logging.h>
 #include <octomap_msgs/conversions.h>
@@ -1345,7 +1345,8 @@ bool OctomapWorld::writeOctomapToFile(const std::string &filename) {
       octomap::SaliencyOcTreeNode::Saliency &saliency = node.getSaliency();
       log_file << it.getX() << "," << it.getY() << "," << it.getZ() << ","
                << (int)saliency.type << "," << (int)saliency.value << ","
-               << saliency.viewpoint << "," << saliency.density << "\n";
+               << (float)getEntropy(saliency) << "," << saliency.viewpoint << ","
+               << saliency.density << "\n";
     }
   }
   log_file.close();
