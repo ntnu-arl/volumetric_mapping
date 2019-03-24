@@ -37,6 +37,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <std_msgs/ColorRGBA.h>
 #include <visualization_msgs/MarkerArray.h>
 #include <volumetric_map_base/world_base.h>
+#include <dynamicEDT3D/dynamicEDTOctomap.h>
+
 
 namespace volumetric_mapping {
 
@@ -331,7 +333,7 @@ class OctomapWorld : public WorldBase {
                 const Eigen::Vector3d& end_point,
                 std::vector<std::tuple<int, int, int>>& gain_log,
                 std::vector<std::pair<Eigen::Vector3d, CellStatus>>& voxel_log);
-
+  void computeEDT3DMap();
   // Helper functions for building up a map from sensor data.
   void castRay(const octomap::point3d& sensor_origin,
                const octomap::point3d& point, octomap::KeySet* free_cells,
@@ -364,6 +366,7 @@ class OctomapWorld : public WorldBase {
   std::vector<Eigen::Vector3d> multiray_endpoints_;
 
   int augment_count_;
+  std::shared_ptr<DynamicEDTOctomap> dist_map_;
 
 };
 

@@ -107,6 +107,9 @@ class OctomapManager : public OctomapWorld {
     std::vector<std::pair<Eigen::Vector3d, CellStatus>>& voxel_log);
 
   void augmentFreeFrustum();
+
+  void computeEDMap();
+
  private:
   // Sets up subscriptions based on ROS node parameters.
   void setParametersFromROS();

@@ -474,6 +474,9 @@ void OctomapManager::augmentFreeFrustum() {
   setFreeRays(tf_w2s_latest_);
 }
 
+void OctomapManager::computeEDMap() {
+  computeEDT3DMap();
+}
 
 void OctomapManager::getScanStatus(
     Eigen::Vector3d& pos, std::vector<Eigen::Vector3d>& multiray_endpoints,

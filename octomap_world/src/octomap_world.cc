@@ -295,6 +295,49 @@ void OctomapWorld::checkRay(
   }
 }
 
+void OctomapWorld::computeEDT3DMap() {
+  clock_t t;
+  t = clock();
+
+  octomap::point3d min(10,10,1);
+  octomap::point3d max(50,50,4);
+  const bool unknownAsOccupied = true;
+  const float maxDist = 2.0;
+  if (dist_map_ == NULL) {
+    dist_map_.reset(new DynamicEDTOctomap(maxDist, octree_.get(), min, max, unknownAsOccupied));
+  }
+
+  //This computes the distance map
+  dist_map_->update();
+
+  t = clock() - t;
+	printf ("It took me %f seconds to build EDT map.\n", ((float)t)/CLOCKS_PER_SEC);
+
+  t = clock();
+
+  //This is how you can query the map
+  octomap::point3d p(5.0,5.0,0.6);
+  //As we don't know what the dimension of the loaded map are, we modify this point
+  p.x() = min.x() + 0.3 * (max.x() - min.x());
+  p.y() = min.y() + 0.6 * (max.y() - min.y());
+  p.z() = min.z() + 0.5 * (max.z() - min.z());
+
+  octomap::point3d closestObst;
+  float distance;
+  double map_res = getResolution();
+  double max_edge_len = 5.0;
+  int num_edges = 200000;
+  for (int ind = 0; ind < (max_edge_len/map_res*num_edges); ++ind) {
+    dist_map_->getDistanceAndClosestObstacle(p, distance, closestObst);
+    p.x() = p.x() + 0.0000001;
+  }
+  t = clock() - t;
+	printf ("It took me %f seconds to check obstacles.\n", ((float)t)/CLOCKS_PER_SEC);
+  std::cout<<"\n\ndistance at point "<<p.x()<<","<<p.y()<<","<<p.z()<<" is "<<distance<<std::endl;
+  if(distance < dist_map_->getMaxDist())
+  std::cout<<"closest obstacle to "<<p.x()<<","<<p.y()<<","<<p.z()<<" is at "<<closestObst.x()<<","<<closestObst.y()<<","<<closestObst.z()<<std::endl;
+}
+
 void OctomapWorld::castRay(const octomap::point3d& sensor_origin,
                            const octomap::point3d& point,
                            octomap::KeySet* free_cells,
@@ -1120,7 +1163,7 @@ void OctomapWorld::generateMarkerArray(
       occupied_nodes->markers[depth_level].colors.push_back(c);
     } else {
       free_nodes->markers[depth_level].points.push_back(cube_center);
-      c.a = 1.0;
+      c.a = 0.3;
       free_nodes->markers[depth_level].colors.push_back(c);
     }
   }
