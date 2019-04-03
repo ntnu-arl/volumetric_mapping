@@ -110,6 +110,39 @@ void OctomapWorld::getOctomapParameters(OctomapParameters* params) const {
   *params = params_;
 }
 
+// void OctomapWorld::insertPointcloudIntoMapImpl(
+//     const Transformation& T_G_sensor,
+//     const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud) {
+//   // Remove NaN values, if any.
+//   std::vector<int> indices;
+//   pcl::removeNaNFromPointCloud(*cloud, *cloud, indices);
+
+//   // First, rotate the pointcloud into the world frame.
+//   pcl::transformPointCloud(*cloud, *cloud,
+//                            T_G_sensor.getTransformationMatrix());
+//   const octomap::point3d p_G_sensor =
+//       pointEigenToOctomap(T_G_sensor.getPosition());
+
+//   // Then add all the rays from this pointcloud.
+//   // We do this as a batch operation - so first get all the keys in a set, then
+//   // do the update in batch.
+//   octomap::KeySet free_cells, occupied_cells;
+//   for (pcl::PointCloud<pcl::PointXYZ>::const_iterator it = cloud->begin();
+//        it != cloud->end(); ++it) {
+//     const octomap::point3d p_G_point(it->x, it->y, it->z);
+//     // First, check if we've already checked this.
+//     octomap::OcTreeKey key = octree_->coordToKey(p_G_point);
+
+//     if (occupied_cells.find(key) == occupied_cells.end()) {
+//       // Check if this is within the allowed sensor range.
+//       castRay(p_G_sensor, p_G_point, &free_cells, &occupied_cells);
+//     }
+//   }
+
+//   // Apply the new free cells and occupied cells from
+//   updateOccupancy(&free_cells, &occupied_cells);
+// }
+
 void OctomapWorld::insertPointcloudIntoMapImpl(
     const Transformation& T_G_sensor,
     const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud) {
@@ -117,8 +150,21 @@ void OctomapWorld::insertPointcloudIntoMapImpl(
   std::vector<int> indices;
   pcl::removeNaNFromPointCloud(*cloud, *cloud, indices);
 
+  pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZ>);
+  ROS_WARN("cloud size: %d", cloud->size());
+  ROS_WARN("cloud_filtered size: %d", cloud_filtered->size());
+  for (pcl::PointCloud<pcl::PointXYZ>::const_iterator it = cloud->begin();
+       it != cloud->end(); ++it) {
+    const double r_thres_2 = 2.0 * 2.0;
+    double dr = it->x * it->x + it->y * it->y + it->z * it->z - r_thres_2;
+    if (dr > 0) {
+      cloud_filtered->push_back(*it);
+    }
+  }
+  ROS_WARN("cloud_filtered size: %d", cloud_filtered->size());
+
   // First, rotate the pointcloud into the world frame.
-  pcl::transformPointCloud(*cloud, *cloud,
+  pcl::transformPointCloud(*cloud_filtered, *cloud_filtered,
                            T_G_sensor.getTransformationMatrix());
   const octomap::point3d p_G_sensor =
       pointEigenToOctomap(T_G_sensor.getPosition());
@@ -127,8 +173,8 @@ void OctomapWorld::insertPointcloudIntoMapImpl(
   // We do this as a batch operation - so first get all the keys in a set, then
   // do the update in batch.
   octomap::KeySet free_cells, occupied_cells;
-  for (pcl::PointCloud<pcl::PointXYZ>::const_iterator it = cloud->begin();
-       it != cloud->end(); ++it) {
+  for (pcl::PointCloud<pcl::PointXYZ>::const_iterator it = cloud_filtered->begin();
+       it != cloud_filtered->end(); ++it) {
     const octomap::point3d p_G_point(it->x, it->y, it->z);
     // First, check if we've already checked this.
     octomap::OcTreeKey key = octree_->coordToKey(p_G_point);
