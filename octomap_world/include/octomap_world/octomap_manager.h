@@ -37,6 +37,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 #include <octomap_msgs/GetOctomap.h>
 #include <std_srvs/Empty.h>
+#include <std_msgs/Float32.h>
+#include <std_msgs/Float32MultiArray.h>
 #include <tf/transform_listener.h>
 #include <volumetric_msgs/GetChangedPoints.h>
 #include <volumetric_msgs/LoadMap.h>
@@ -167,6 +169,8 @@ class OctomapManager : public OctomapWorld {
   // Publish markers for visualization.
   ros::Publisher occupied_nodes_pub_;
   ros::Publisher free_nodes_pub_;
+
+  ros::Publisher time_cost_pub_;
 
   // Services!
   ros::ServiceServer reset_map_service_;

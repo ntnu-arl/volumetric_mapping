@@ -249,6 +249,9 @@ void OctomapManager::advertisePublishers() {
         nh_private_.createTimer(ros::Duration(1.0 / map_publish_frequency_),
                                 &OctomapManager::publishAllEvent, this);
   }
+
+  time_cost_pub_ = nh_private_.advertise<std_msgs::Float32MultiArray>(
+    "map_update_time_cost", 1, false);
 }
 
 void OctomapManager::publishAll() {
@@ -459,15 +462,27 @@ void OctomapManager::insertDisparityImageWithTf(
 void OctomapManager::insertPointcloudWithTf(
     const sensor_msgs::PointCloud2::ConstPtr& pointcloud) {
   // Look up transform from sensor frame to world frame.
+  ros::Time rostime_start = ros::Time::now();
+  double time_elapsed1;
+  double time_elapsed2;
+
   Transformation sensor_to_world;
   if (lookupTransform(pointcloud->header.frame_id, world_frame_,
                       pointcloud->header.stamp, &sensor_to_world)) {
     tf_w2s_latest_ = sensor_to_world;
     // ros::Time time_start = ros::Time::now();
+    time_elapsed1 = (double)((ros::Time::now() - rostime_start).toSec());
     insertPointcloud(sensor_to_world, pointcloud);
     //ROS_INFO("Time to insert PCL to octomap: %f", (ros::Time::now() -time_start).toSec());
     augmentFreeRays(sensor_to_world);
   }
+
+  time_elapsed2 = (double)((ros::Time::now() - rostime_start).toSec());
+
+  std_msgs::Float32MultiArray tim_msg;
+  tim_msg.data.push_back(time_elapsed1);
+  tim_msg.data.push_back(time_elapsed2);
+  time_cost_pub_.publish(tim_msg);
 }
 
 void OctomapManager::augmentFreeFrustum() {
