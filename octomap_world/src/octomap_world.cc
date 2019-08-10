@@ -113,9 +113,22 @@ void OctomapWorld::getOctomapParameters(OctomapParameters* params) const {
 void OctomapWorld::insertPointcloudIntoMapImpl(
     const Transformation& T_G_sensor,
     const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud) {
+
   // Remove NaN values, if any.
   std::vector<int> indices;
   pcl::removeNaNFromPointCloud(*cloud, *cloud, indices);
+
+  if (params_.map_update_sparsify_filter_enable) {
+    // Insert any filter here to reduce number of points in the PCL for testing purpose.
+    // std::cout << "Before: " << cloud->size() << std::endl;
+    //   pcl::PointCloud<pcl::PointXYZ>::Ptr cloud_filtered(new pcl::PointCloud<pcl::PointXYZ>());
+    //   pcl::VoxelGrid<pcl::PointXYZ> sor;
+    //   sor.setInputCloud (cloud);
+    //   sor.setLeafSize (0.2f, 0.2f, 0.2f);
+    //   sor.filter (*cloud_filtered);
+    //   pcl::copyPointCloud(*cloud_filtered, *cloud);
+    // std::cout << "After: " << cloud->size() << std::endl;
+  }
 
   // First, rotate the pointcloud into the world frame.
   pcl::transformPointCloud(*cloud, *cloud,
@@ -126,9 +139,18 @@ void OctomapWorld::insertPointcloudIntoMapImpl(
   // Then add all the rays from this pointcloud.
   // We do this as a batch operation - so first get all the keys in a set, then
   // do the update in batch.
+#ifdef USE_OCTOMAP_OMP
+  double time_elapsed;
+  octomap::Pointcloud octo_cloud;
+  octo_cloud.reserve(cloud->points.size());
+  for (const auto& p : cloud->points) {
+    octo_cloud.push_back(octomap::point3d(p.x, p.y, p.z));
+  }
+  octree_->insertPointCloud(octo_cloud, p_G_sensor, params_.sensor_max_range);
+#else
   octomap::KeySet free_cells, occupied_cells;
   for (pcl::PointCloud<pcl::PointXYZ>::const_iterator it = cloud->begin();
-       it != cloud->end(); ++it) {
+      it != cloud->end(); ++it) {
     const octomap::point3d p_G_point(it->x, it->y, it->z);
     // First, check if we've already checked this.
     octomap::OcTreeKey key = octree_->coordToKey(p_G_point);
@@ -141,6 +163,8 @@ void OctomapWorld::insertPointcloudIntoMapImpl(
 
   // Apply the new free cells and occupied cells from
   updateOccupancy(&free_cells, &occupied_cells);
+#endif
+
 }
 
 void OctomapWorld::insertProjectedDisparityIntoMapImpl(
@@ -205,14 +229,7 @@ void OctomapWorld::initFrustumToAugment() {
 }
 
 void OctomapWorld::augmentFreeRays(Transformation sensor_to_world) {
-  if (params_.augment_free_frustum_enabled) {
-    if ((augment_count_ >= 0) && (augment_count_ < params_.free_frustum_skip)) {
-      augment_count_++;
-      return;
-    }
-    augment_count_ = 0;
-    setFreeRays(sensor_to_world);
-  }
+  setFreeRays(sensor_to_world);
 }
 
 void OctomapWorld::setFreeRays(Transformation sensor_to_world) {
@@ -222,11 +239,10 @@ void OctomapWorld::setFreeRays(Transformation sensor_to_world) {
     transformed_ray_endpoint = sensor_to_world * transformed_ray_endpoint;
     freeRay(sensor_to_world.getPosition(), transformed_ray_endpoint);
   }
-  bool lazy_eval = true;
-  if (lazy_eval) {
+  // FreeRay function sets logodd value directly to the voxel, so have to call updateInnerOccupancy
+  if (!params_.map_update_inner_occupancy_disable) {
     octree_->updateInnerOccupancy();
   }
-  //ROS_INFO("Time to setFreeRays Octomap: %f", (ros::Time::now() -time_start).toSec());
 }
 
 inline float logodds(double probability){
@@ -256,7 +272,6 @@ void OctomapWorld::freeRay(const Eigen::Vector3d& view_point, const Eigen::Vecto
         constexpr double eps_prob = 0.001*0.01;  //0.001*1pc
         octree_->setNodeValue(*it, logodds(params_.threshold_occupancy-eps_prob));
       }
-      // octree_->updateInnerOccupancy();
     }
   }
 }
@@ -360,6 +375,8 @@ void OctomapWorld::updateOccupancy(octomap::KeySet* free_cells,
                                    octomap::KeySet* occupied_cells) {
   CHECK_NOTNULL(free_cells);
   CHECK_NOTNULL(occupied_cells);
+  // std::cout << "UpdateOccupancy: occupied -->" << occupied_cells->size() <<
+  // "free -->" << free_cells->size() << std::endl;
 
   // Mark occupied cells.
   for (octomap::KeySet::iterator it = occupied_cells->begin(),
@@ -381,7 +398,10 @@ void OctomapWorld::updateOccupancy(octomap::KeySet* free_cells,
        it != end; ++it) {
     octree_->updateNode(*it, false);
   }
-  octree_->updateInnerOccupancy();
+
+  if (!params_.map_update_inner_occupancy_disable) {
+    octree_->updateInnerOccupancy();
+  }
 }
 
 void OctomapWorld::enableTreatUnknownAsOccupied() {

@@ -118,6 +118,17 @@ void OctomapManager::setParametersFromROS() {
                     params.free_frustum_fov);
   nh_private_.param("free_frustum_resolution", params.free_frustum_resolution,
                       params.free_frustum_resolution);
+  nh_private_.param("augment_free_frustum_max_freq", params.augment_free_frustum_max_freq,
+                      params.augment_free_frustum_max_freq);
+
+  nh_private_.param("map_update_inner_occupancy_disable",
+                    params.map_update_inner_occupancy_disable,
+                    params.map_update_inner_occupancy_disable);
+  nh_private_.param("map_update_max_freq", params.map_update_max_freq,
+                    params.map_update_max_freq);
+  nh_private_.param("map_update_sparsify_filter_enable",
+                    params.map_update_sparsify_filter_enable,
+                    params.map_update_sparsify_filter_enable);
 
   // Try to initialize Q matrix from parameters, if available.
   std::vector<double> Q_vec;
@@ -255,6 +266,8 @@ void OctomapManager::advertisePublishers() {
 }
 
 void OctomapManager::publishAll() {
+ros::Time rostime_start = ros::Time::now();
+
   if (latch_topics_ || occupied_nodes_pub_.getNumSubscribers() > 0 ||
       free_nodes_pub_.getNumSubscribers() > 0) {
     visualization_msgs::MarkerArray occupied_nodes, free_nodes;
@@ -301,6 +314,10 @@ void OctomapManager::publishAll() {
       nearest_obstacle_pub_.publish(cloud);
     }
   }
+
+  double time_elapsed = (double)((ros::Time::now() - rostime_start).toSec());
+  std::cout << "Time to publish: " << time_elapsed << std::endl;
+
 }
 
 void OctomapManager::publishAllEvent(const ros::TimerEvent& e) { publishAll(); }
@@ -461,34 +478,58 @@ void OctomapManager::insertDisparityImageWithTf(
 
 void OctomapManager::insertPointcloudWithTf(
     const sensor_msgs::PointCloud2::ConstPtr& pointcloud) {
-  // Look up transform from sensor frame to world frame.
+  const double kTimeDiffError = 0.03; // 30ms delay allowed - magic number
+  static ros::Time time_insert_prev = ros::Time::now();
+  static ros::Time time_augment_free_rays_prev = ros::Time::now();
+
   ros::Time rostime_start = ros::Time::now();
   double time_elapsed1;
   double time_elapsed2;
 
+  OctomapParameters params;
+  getOctomapParameters(&params);
+
+  // Look up transform from sensor frame to world frame.
   Transformation sensor_to_world;
-  if (lookupTransform(pointcloud->header.frame_id, world_frame_,
-                      pointcloud->header.stamp, &sensor_to_world)) {
-    tf_w2s_latest_ = sensor_to_world;
-    // ros::Time time_start = ros::Time::now();
-    time_elapsed1 = (double)((ros::Time::now() - rostime_start).toSec());
-    insertPointcloud(sensor_to_world, pointcloud);
-    //ROS_INFO("Time to insert PCL to octomap: %f", (ros::Time::now() -time_start).toSec());
-    augmentFreeRays(sensor_to_world);
+  bool looked_up = false;
+  double time_delta1 =
+      (double)((pointcloud->header.stamp - time_augment_free_rays_prev).toSec()) +
+      kTimeDiffError - 1.0 / params.augment_free_frustum_max_freq;
+  if (params.augment_free_frustum_enabled) {
+    if (time_delta1 > 0.0) {
+      time_augment_free_rays_prev = pointcloud->header.stamp;
+      if (lookupTransform(pointcloud->header.frame_id, world_frame_,
+                          pointcloud->header.stamp, &sensor_to_world)) {
+        looked_up = true;
+        tf_w2s_latest_ = sensor_to_world;
+        augmentFreeRays(sensor_to_world);
+      }
+      time_elapsed1 = (double)((ros::Time::now() - rostime_start).toSec());
+      ROS_INFO("Insert freerays: %f (sec)", time_elapsed1);
+    }
   }
 
-  time_elapsed2 = (double)((ros::Time::now() - rostime_start).toSec());
-
-  std_msgs::Float32MultiArray tim_msg;
-  tim_msg.data.push_back(time_elapsed1);
-  tim_msg.data.push_back(time_elapsed2);
-  time_cost_pub_.publish(tim_msg);
+  double time_delta2 = (double)((pointcloud->header.stamp - time_insert_prev).toSec()) +
+        kTimeDiffError - 1.0 / params.map_update_max_freq;
+  if (time_delta2 > 0.0) {
+    time_insert_prev = pointcloud->header.stamp;
+    if (looked_up ||
+        lookupTransform(pointcloud->header.frame_id, world_frame_,
+                        pointcloud->header.stamp, &sensor_to_world)) {
+      tf_w2s_latest_ = sensor_to_world;
+      insertPointcloud(sensor_to_world, pointcloud);
+    }
+    time_elapsed2 = (double)((ros::Time::now() - rostime_start).toSec());
+    std_msgs::Float32MultiArray tim_msg;
+    tim_msg.data.push_back(time_elapsed1);
+    tim_msg.data.push_back(time_elapsed2);
+    time_cost_pub_.publish(tim_msg);
+  }
 }
 
 void OctomapManager::augmentFreeFrustum() {
   setFreeRays(tf_w2s_latest_);
 }
-
 
 void OctomapManager::getScanStatus(
     Eigen::Vector3d& pos, std::vector<Eigen::Vector3d>& multiray_endpoints,

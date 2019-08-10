@@ -38,6 +38,9 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <visualization_msgs/MarkerArray.h>
 #include <volumetric_map_base/world_base.h>
 
+#include <pcl/filters/voxel_grid.h>
+#include <pcl/io/ply_io.h>
+
 namespace volumetric_mapping {
 
 // Different behaviours for setting log_odds_value in a bounding box
@@ -67,8 +70,11 @@ struct OctomapParameters {
         visualize_max_z(std::numeric_limits<double>::max()),
         treat_unknown_as_occupied(true),
         change_detection_enabled(false),
-        augment_free_frustum_enabled(false)
-         {
+        augment_free_frustum_enabled(false),
+        augment_free_frustum_max_freq(1.0),
+        map_update_inner_occupancy_disable(false),
+        map_update_max_freq(100.0),
+        map_update_sparsify_filter_enable(false) {
     // Set reasonable defaults here...
     free_frustum_skip = 10; // every 1sec
     free_frustum_range = 15.0;
@@ -78,8 +84,6 @@ struct OctomapParameters {
     free_frustum_resolution.resize(2);
     free_frustum_resolution[0] = 2.5 * M_PI / 180;
     free_frustum_resolution[1] = 1.0 * M_PI / 180;
-
-
   }
 
   // Resolution for the Octree. It is not possible to change this without
@@ -125,6 +129,11 @@ struct OctomapParameters {
   double free_frustum_range;
   std::vector<double> free_frustum_fov;
   std::vector<double> free_frustum_resolution;
+  double augment_free_frustum_max_freq;
+
+  bool map_update_inner_occupancy_disable;
+  double map_update_max_freq;
+  bool map_update_sparsify_filter_enable;
 
 };
 
