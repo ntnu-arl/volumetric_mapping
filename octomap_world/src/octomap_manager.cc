@@ -316,7 +316,7 @@ ros::Time rostime_start = ros::Time::now();
   }
 
   double time_elapsed = (double)((ros::Time::now() - rostime_start).toSec());
-  std::cout << "Time to publish: " << time_elapsed << std::endl;
+  // std::cout << "Time to publish: " << time_elapsed << std::endl;
 
 }
 
@@ -505,7 +505,7 @@ void OctomapManager::insertPointcloudWithTf(
         augmentFreeRays(sensor_to_world);
       }
       time_elapsed1 = (double)((ros::Time::now() - rostime_start).toSec());
-      ROS_INFO("Insert freerays: %f (sec)", time_elapsed1);
+      // ROS_INFO("Insert freerays: %f (sec)", time_elapsed1);
     }
   }
 
