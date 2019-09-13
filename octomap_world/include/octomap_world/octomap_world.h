@@ -251,6 +251,7 @@ class OctomapWorld : public WorldBase {
   bool writeOctomapToBinaryConst(std::ostream& s) const;
 
   // Helpers for publishing.
+  void getNumVoxels(int &num_occupied_voxels, int &num_free_voxels);
   void generateMarkerArray(const std::string& tf_frame,
                            visualization_msgs::MarkerArray* occupied_nodes,
                            visualization_msgs::MarkerArray* free_nodes);

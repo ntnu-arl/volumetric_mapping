@@ -1057,6 +1057,21 @@ bool OctomapWorld::isSpeckleNode(const octomap::OcTreeKey& key) const {
   return true;
 }
 
+void OctomapWorld::getNumVoxels(int &num_occupied_voxels, int &num_free_voxels){
+  // Iterate through the whole tree
+  // Need to check again with depth
+  for (octomap::OcTree::leaf_iterator it = octree_->begin_leafs(),
+                                      end = octree_->end_leafs();
+       it != end; ++it) {
+    int depth_level = it.getDepth();
+    if (octree_->isNodeOccupied(*it)) {
+      ++num_occupied_voxels;
+    } else {
+      ++num_free_voxels;
+    }
+  }
+}
+
 void OctomapWorld::generateMarkerArray(
     const std::string& tf_frame,
     visualization_msgs::MarkerArray* occupied_nodes,
