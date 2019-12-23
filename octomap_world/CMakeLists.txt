@@ -1,7 +1,9 @@
 cmake_minimum_required(VERSION 2.8.3)
 project(octomap_world)
 
-find_package(catkin_simple REQUIRED)
+find_package(catkin_simple REQUIRED
+            pcl_ros
+            pcl_conversions)
 catkin_simple(ALL_DEPS_REQUIRED)
 
 option(USE_OCTOMAP_OMP "Use OMP in Octomap" OFF)

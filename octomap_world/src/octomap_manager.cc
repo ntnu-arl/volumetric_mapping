@@ -208,6 +208,8 @@ void OctomapManager::subscribe() {
       "disparity", 40, &OctomapManager::insertDisparityImageWithTf, this);
   pointcloud_sub_ = nh_.subscribe(
       "pointcloud", 40, &OctomapManager::insertPointcloudWithTf, this);
+  free_pointcloud_sub_ = nh_.subscribe(
+      "freespace_pointcloud", 40, &OctomapManager::insertFreePointcloudWithTf, this);
   octomap_sub_ =
       nh_.subscribe("input_octomap", 10, &OctomapManager::octomapCallback, this);
 }
@@ -524,6 +526,19 @@ void OctomapManager::insertPointcloudWithTf(
     tim_msg.data.push_back(time_elapsed1);
     tim_msg.data.push_back(time_elapsed2);
     time_cost_pub_.publish(tim_msg);
+  }
+}
+
+void OctomapManager::insertFreePointcloudWithTf(
+    const sensor_msgs::PointCloud2::ConstPtr& pointcloud) {
+  Transformation sensor_to_world;
+  bool looked_up = false;
+
+  if (lookupTransform(pointcloud->header.frame_id, world_frame_,
+                      pointcloud->header.stamp, &sensor_to_world)) {
+    looked_up = true;
+    tf_w2s_latest_ = sensor_to_world;
+    setFreePCL(*pointcloud, sensor_to_world);
   }
 }
 

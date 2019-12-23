@@ -245,6 +245,28 @@ void OctomapWorld::setFreeRays(Transformation sensor_to_world) {
   }
 }
 
+void OctomapWorld::setFreePCL(sensor_msgs::PointCloud2 pointcloud, Transformation sensor_to_world) {
+  ros::Time time_start = ros::Time::now();
+
+  pcl::PointCloud<pcl::PointXYZ>::Ptr cloud (new pcl::PointCloud<pcl::PointXYZ>);
+  pcl::fromROSMsg (pointcloud, *cloud);
+  std::vector<Eigen::Vector3d> free_pcl_endpoints;
+  for(auto ep:cloud->points) {
+    Eigen::Vector3d p(ep.x, ep.y, ep.z);
+    free_pcl_endpoints.push_back(p);
+  }
+  
+  for (const auto& ray_endpoint : free_pcl_endpoints) {
+    Eigen::Vector3d transformed_ray_endpoint(ray_endpoint[0], ray_endpoint[1], ray_endpoint[2]);
+    transformed_ray_endpoint = sensor_to_world * transformed_ray_endpoint;
+    freeRay(sensor_to_world.getPosition(), transformed_ray_endpoint);
+  }
+  // FreeRay function sets logodd value directly to the voxel, so have to call updateInnerOccupancy
+  if (!params_.map_update_inner_occupancy_disable) {
+    octree_->updateInnerOccupancy();
+  }
+}
+
 inline float logodds(double probability){
     return (float) log(probability/(1-probability));
 }
