@@ -532,12 +532,9 @@ void OctomapManager::insertPointcloudWithTf(
 void OctomapManager::insertFreePointcloudWithTf(
     const sensor_msgs::PointCloud2::ConstPtr& pointcloud) {
   Transformation sensor_to_world;
-  bool looked_up = false;
 
   if (lookupTransform(pointcloud->header.frame_id, world_frame_,
                       pointcloud->header.stamp, &sensor_to_world)) {
-    looked_up = true;
-    tf_w2s_latest_ = sensor_to_world;
     setFreePCL(*pointcloud, sensor_to_world);
   }
 }
