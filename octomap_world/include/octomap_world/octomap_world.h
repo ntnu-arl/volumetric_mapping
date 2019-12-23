@@ -38,8 +38,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <visualization_msgs/MarkerArray.h>
 #include <volumetric_map_base/world_base.h>
 
-#include <pcl/filters/voxel_grid.h>
-#include <pcl/io/ply_io.h>
+#include <pcl/conversions.h>
+#include <pcl_conversions/pcl_conversions.h>
 
 namespace volumetric_mapping {
 
@@ -334,6 +334,7 @@ class OctomapWorld : public WorldBase {
   // Augment the map with the predefined set of rays given current TF.
   void augmentFreeRays(Transformation sensor_to_world);
   void setFreeRays(Transformation sensor_to_world);
+  void setFreePCL(sensor_msgs::PointCloud2, Transformation );
   //
   void initFrustumToAugment();
   void checkRay(const Eigen::Vector3d& view_point,

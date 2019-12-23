@@ -46,6 +46,7 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <volumetric_msgs/SetBoxOccupancy.h>
 #include <volumetric_msgs/SetDisplayBounds.h>
 
+#include <pcl/conversions.h>
 #include <pcl_conversions/pcl_conversions.h>
 
 namespace volumetric_mapping {
@@ -67,6 +68,8 @@ class OctomapManager : public OctomapWorld {
       const stereo_msgs::DisparityImageConstPtr& disparity);
   void insertPointcloudWithTf(
       const sensor_msgs::PointCloud2::ConstPtr& pointcloud);
+  void insertFreePointcloudWithTf(
+    const sensor_msgs::PointCloud2::ConstPtr& pointcloud);
 
   // Input Octomap callback.
   void octomapCallback(const octomap_msgs::Octomap& msg);
@@ -153,6 +156,7 @@ class OctomapManager : public OctomapWorld {
   ros::Subscriber left_info_sub_;
   ros::Subscriber right_info_sub_;
   ros::Subscriber pointcloud_sub_;
+  ros::Subscriber free_pointcloud_sub_;
   ros::Subscriber octomap_sub_;
 
   // Only used if use_tf_transforms_ set to false.
