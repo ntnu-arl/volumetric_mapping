@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 2.8.3)
+cmake_minimum_required(VERSION 3.0.2)
 project(octomap_world)
 
 find_package(catkin_simple REQUIRED
@@ -15,7 +15,7 @@ if (USE_OCTOMAP_OMP)
   SET(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
 endif (USE_OCTOMAP_OMP)
 
-add_definitions(-std=c++11)
+add_definitions(-std=c++14)
 
 #############
 # LIBRARIES #
