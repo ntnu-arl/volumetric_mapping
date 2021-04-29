@@ -15,7 +15,7 @@ if (USE_OCTOMAP_OMP)
   SET(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${OpenMP_EXE_LINKER_FLAGS}")
 endif (USE_OCTOMAP_OMP)
 
-add_definitions(-std=c++11)
+add_definitions(-std=c++14)
 
 #############
 # LIBRARIES #
