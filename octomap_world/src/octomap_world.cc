@@ -206,7 +206,15 @@ void OctomapWorld::insertSaliencyImageIntoMapImpl(
       cv::Point2d uv_rect;
       uv_rect.x = i;
       uv_rect.y = j;
-      p = CamModel.projectPixelTo3dRay(	uv_rect ) ;
+      // http://docs.ros.org/en/jade/api/image_geometry/html/c++/pinhole__camera__model_8cpp_source.html#l00276
+#define DEPTH_CX 240.932861328125
+#define DEPTH_CY 137.50704956054688
+#define DEPTH_FX 240.9515380859375
+#define DEPTH_FY 240.9515380859375
+      p.x = (uv_rect.x - DEPTH_CX) / DEPTH_FX;
+      p.y = (uv_rect.y - DEPTH_CY) / DEPTH_FY;
+      p.z = 1;
+      // p = CamModel.projectPixelTo3dRay(	uv_rect ) ;
 
       // transform to world coordinate
       // First, rotate the pointcloud into the world frame.

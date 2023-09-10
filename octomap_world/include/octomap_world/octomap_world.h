@@ -53,10 +53,10 @@ namespace volumetric_mapping {
 struct SaliencyParameters{
   SaliencyParameters():
     alpha(0.7),
-    beta(-0.0008),  //0.0005
-    saliency_threshold(125),
+    beta(0.0),  //0.0005 // no need for inhibition of return
+    saliency_threshold(20), // set to low value to accept every salient voxels
     timestamp(0),
-    projection_limit(5.0),
+    projection_limit(17.3), // 10 sqrt(3)
     ground_limit(-10){
     // ... can initialize default numbers here
   }

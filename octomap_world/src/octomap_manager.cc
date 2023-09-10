@@ -55,7 +55,7 @@ OctomapManager::OctomapManager(const ros::NodeHandle& nh,
       timestamp_tolerance_ns_(10000000),
       Q_initialized_(false),
       Q_(Eigen::Matrix4d::Identity()),
-      full_image_size_(752, 480),
+      full_image_size_(480, 270),
       map_publish_frequency_(0.0),
       tf_update_frequency_(5.0) {
   setParametersFromROS();
@@ -75,6 +75,7 @@ OctomapManager::OctomapManager(const ros::NodeHandle& nh,
       ROS_ERROR_STREAM("Could not load octomap from path: " << octomap_file);
     }
   }
+  ROS_WARN_STREAM("octomap_file:" << octomap_file);
 }
 
 void OctomapManager::setParametersFromROS() {
